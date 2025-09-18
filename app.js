@@ -21,6 +21,7 @@ const bot = new TelegramBot(token, {
 global.userScreenshots = {};
 global.waitingForPoints = {};
 global.adminStates = {};
+global.userMenuContext = {};
 
 // База данных
 const db = new sqlite3.Database(config.DATABASE.name);
@@ -236,11 +237,51 @@ const internMenuKeyboard = {
 const mainMenuKeyboard = {
     reply_markup: {
         keyboard: [
-            ['💰 Мой баланс', '⚔️ PVP Сражения'],
-            ['🛒 Магазин', '🎓 Курсы'],
-            ['🎯 Мероприятия', '📋 Мои задачи'],
-            ['🎁 Подарить баллы', '🏆 Рейтинг'],
-            ['🎉 Похвастаться']
+            ['💰 Личное', '🎓 Обучение'],
+            ['📋 Работа', '🎮 Развлечения'],
+            ['👤 Мой профиль']
+        ],
+        resize_keyboard: true
+    }
+};
+
+// Sub-menus for main menu categories
+const personalKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['💰 Мой баланс', '🏆 Рейтинг'],
+            ['🔙 В главное меню']
+        ],
+        resize_keyboard: true
+    }
+};
+
+const learningKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['🎓 Курсы', '📊 Мой прогресс'],
+            ['🔙 В главное меню']
+        ],
+        resize_keyboard: true
+    }
+};
+
+const workKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['📋 Мои задачи', '🎯 Мероприятия'],
+            ['🔙 В главное меню']
+        ],
+        resize_keyboard: true
+    }
+};
+
+const funKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['⚔️ PVP Сражения', '🛒 Магазин'],
+            ['🎁 Подарить баллы', '🎉 Похвастаться'],
+            ['🔙 В главное меню']
         ],
         resize_keyboard: true
     }
@@ -303,12 +344,32 @@ const eventsKeyboard = {
 const adminKeyboard = {
     reply_markup: {
         keyboard: [
-            ['🗓️ Создать мероприятие', '📅 Все мероприятия'],
-            ['✏️ Редактировать слот', '🗑️ Удалить слот'],
-            ['📢 Рассылка', '📋 Заявки на проверку'],
+            ['🗓️ Мероприятия', '📢 Рассылка'],
             ['👥 Пользователи', '📊 Статистика'],
             ['💰 Управление балансом', '🎉 Достижения'],
             ['🔙 Выйти из админки']
+        ],
+        resize_keyboard: true
+    }
+};
+
+// Sub-menus for admin
+const adminEventsKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['🗓️ Создать мероприятие', '📅 Все мероприятия'],
+            ['✏️ Редактировать слот', '🗑️ Удалить слот'],
+            ['🔙 В админку']
+        ],
+        resize_keyboard: true
+    }
+};
+
+const adminUsersKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['👥 Пользователи', '📋 Заявки на проверку'],
+            ['🔙 В админку']
         ],
         resize_keyboard: true
     }
@@ -409,6 +470,12 @@ const eventCategoryKeyboard = {
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const telegramId = msg.from.id;
+
+    // [DEBUG LOG] Clear any active state on /start
+    if (global.userScreenshots[telegramId]) {
+        console.log(`[START DEBUG] Clearing state for user ${telegramId}: ${JSON.stringify({type: global.userScreenshots[telegramId].type, step: global.userScreenshots[telegramId].step})}`);
+        delete global.userScreenshots[telegramId];
+    }
     
     try {
         db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
@@ -420,9 +487,9 @@ bot.onText(/\/start/, (msg) => {
             if (user && user.is_registered === 1) {
                 showMainMenu(chatId, user);
             } else {
-                bot.sendMessage(chatId, 
+                bot.sendMessage(chatId,
                     '🎉 Добро пожаловать в "Жизнь в Партнеркино"! 🚀\n\n' +
-                    '💫 Кто ты в нашей команде? 👇', 
+                    '💫 Кто ты в нашей команде? 👇',
                     startKeyboard).catch(console.error);
             }
         });
@@ -439,6 +506,10 @@ bot.on('message', (msg) => {
         const text = msg.text;
         const telegramId = msg.from.id;
         const username = msg.from.username || 'user';
+
+        // [DEBUG LOG] Log incoming message and current state
+        const currentState = global.userScreenshots[telegramId];
+        console.log(`[MESSAGE DEBUG] User ${telegramId} sent: "${text}" | Current state: ${currentState ? JSON.stringify({type: currentState.type, step: currentState.step}) : 'none'}`);
         
         // Обработка команд достижений
         if (text && text.startsWith('/like_')) {
@@ -471,6 +542,11 @@ bot.on('message', (msg) => {
         }
         
         if (!text) return;
+
+        // DEBUG LOG FOR MAIN MENU BUTTON
+        if (text && text.includes('Главное меню')) {
+            console.log(`[BUTTON DEBUG] Main menu button pressed by user ${telegramId}: exact text="${text}"`);
+        }
         
         // РЕГИСТРАЦИЯ
         if (text === '👶 Я стажер') {
@@ -583,13 +659,6 @@ function showEventDetails(chatId, telegramId, event) {
              handleEventSignup(chatId, telegramId, eventName);
              delete global.userScreenshots[telegramId];
          }
-         if (text === '🔙 Назад в меню') {
-             // Clear event booking state if active
-             if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'event_booking') {
-                 delete global.userScreenshots[telegramId];
-             }
-             backToMainMenu(chatId, telegramId);
-         }
 
          // ========== МЕРОПРИЯТИЯ (CONSOLIDATED HANDLER) ==========
          if (text === '📅 Все мероприятия') {
@@ -659,6 +728,31 @@ function showEventDetails(chatId, telegramId, event) {
         else if (text === '🔙 Выйти из админки') {
             exitAdminMode(chatId, telegramId);
         }
+
+        // ========== NEW CATEGORY HANDLERS ==========
+        // Main menu categories
+        if (text === '💰 Личное') {
+            showPersonalMenu(chatId);
+        } else if (text === '🎓 Обучение') {
+            showLearningMenu(chatId);
+        } else if (text === '📋 Работа') {
+            showWorkMenu(chatId, telegramId);
+        } else if (text === '🎮 Развлечения') {
+            showFunMenu(chatId);
+        }
+
+        // Admin categories
+        if (text === '🗓️ Мероприятия') {
+            showAdminEventsMenu(chatId);
+        } else if (text === '📢 Рассылка') {
+            startBroadcast(chatId, telegramId);
+        } else if (text === '👥 Пользователи') {
+            showAdminUsersMenu(chatId);
+        } else if (text === '📊 Статистика') {
+            showAdminStats(chatId, telegramId);
+        } else if (text === '🔙 В админку') {
+            backToAdminMenu(chatId, telegramId);
+        }
         
         // ========== ОСНОВНОЕ МЕНЮ ==========
         if (text === '💰 Мой баланс') {
@@ -670,8 +764,14 @@ function showEventDetails(chatId, telegramId, event) {
         if (text === '📊 Мой прогресс') {
             showInternProgress(chatId, telegramId);
         }
-        if (text === '🔄 Главное меню' || text === '🔙 Назад в меню') {
+        if (text === '🔄 Главное меню' || text === '🔙 В главное меню' || text === '🔙 Главное меню' || text === '👤 Мой профиль') {
+            console.log(`[NAV DEBUG] Direct main menu trigger for user ${telegramId} (text: "${text}")`);
             backToMainMenu(chatId, telegramId);
+            return;
+        } else if (text === '🔙 Назад в меню') {
+            console.log(`[NAV DEBUG] Back to menu button pressed for user ${telegramId}, context: ${JSON.stringify(global.userMenuContext[chatId] || 'none')}`);
+            handleBackNavigation(chatId, telegramId);
+            return;
         }
         
         // ========== ТЕСТЫ ДЛЯ СТАЖЕРОВ ==========
@@ -902,6 +1002,23 @@ function registerUser(chatId, telegramId, username, role) {
 }
 
 function handleTextInput(chatId, telegramId, text, username) {
+    // [DEBUG LOG] Entry to handleTextInput
+    const currentState = global.userScreenshots[telegramId];
+    console.log(`[TEXTINPUT DEBUG] User ${telegramId} text "${text}" | State on entry: ${currentState ? JSON.stringify({type: currentState.type, step: currentState.step}) : 'none'}`);
+    
+    // Escape mechanism: Check for keywords to reset state
+    const lowerText = text.toLowerCase();
+    const escapeKeywords = ['exit', 'menu', 'back', '/menu'];
+    if (lowerText.includes('exit') || lowerText.includes('menu') || lowerText.includes('back') || text === '/menu') {
+        console.log(`[ESCAPE DEBUG] Escape keyword detected: "${text}" for user ${telegramId}`);
+        if (currentState) {
+            delete global.userScreenshots[telegramId];
+            console.log(`[ESCAPE DEBUG] Cleared state for user ${telegramId}`);
+        }
+        backToMainMenu(chatId, telegramId);
+        return;
+    }
+    
     try {
         // Обработка создания мероприятий админом
         if (global.adminStates[telegramId]) {
@@ -973,6 +1090,7 @@ function handleTextInput(chatId, telegramId, text, username) {
             const eventData = global.userScreenshots[telegramId];
  
             if (isNaN(slotNumber)) {
+                // Add counter for event booking if needed, but since it clears silently, keep as is
                 console.log(`[DEBUG SLOT ERROR] Non-numeric text "${text}", clearing state silently for user ${telegramId}`);
                 delete global.userScreenshots[telegramId];
                 // Allow fall-through to other handlers if needed, but since end, just clear
@@ -1004,10 +1122,10 @@ function handleTextInput(chatId, telegramId, text, username) {
         // Регистрация пользователя
         db.get("SELECT * FROM users WHERE telegram_id = ? AND is_registered = 0", [telegramId], (err, user) => {
             if (user) {
-                db.run("UPDATE users SET full_name = ?, contacts = ?, is_registered = 1 WHERE telegram_id = ?", 
+                db.run("UPDATE users SET full_name = ?, contacts = ?, is_registered = 1 WHERE telegram_id = ?",
                        [text, text, telegramId], () => {
-                    
-                    const message = user.role === 'стажер' ? 
+                       
+                    const message = user.role === 'стажер' ?
                         '🎊 Регистрация завершена! 🎉\n\n' +
                         '📚 Теперь проходи тесты и зарабатывай баллы! 💪\n' +
                         '🔥 Удачи, стажер!' :
@@ -1026,27 +1144,41 @@ function handleTextInput(chatId, telegramId, text, username) {
 }
 
 function showMainMenu(chatId, user) {
+    console.log(`[MENU DEBUG] showMainMenu called for user ${user.id} (role: ${user.role}), chatId: ${chatId}`);
     try {
         if (user.role === 'стажер') {
+            console.log(`[MENU DEBUG] Processing intern path for user ${user.id}`);
             db.get(`SELECT COUNT(*) as completed FROM intern_progress ip
                     JOIN users u ON u.id = ip.user_id
                     WHERE u.telegram_id = ? AND ip.completed = 1`, [user.telegram_id], (err, progress) => {
+                if (err) {
+                    console.error('[MENU DEBUG] Intern progress query error:', err);
+                    return;
+                }
+                console.log(`[MENU DEBUG] Intern progress fetched: ${progress ? progress.completed : 0} completed tests`);
 
                 if (progress && progress.completed >= 3) {
+                    console.log(`[MENU DEBUG] Sending completed intern menu message`);
                     bot.sendMessage(chatId,
                         '🎉 Поздравляю! Стажировка завершена! 🏆\n\n' +
                         `💰 Баланс: ${user.p_coins} П-коинов\n` +
                         '🚀 Теперь тебе доступны ВСЕ функции!\n' +
-                        '🔥 Время покорять новые вершины!', mainMenuKeyboard).catch(console.error);
+                        '🔥 Время покорять новые вершины!', mainMenuKeyboard).catch((sendErr) => {
+                            console.error('[MENU DEBUG] Failed to send completed intern message:', sendErr);
+                        });
                 } else {
+                    console.log(`[MENU DEBUG] Sending active intern menu message`);
                     bot.sendMessage(chatId,
                         '👋 Привет, стажер! 📚\n\n' +
                         `💰 Баланс: ${user.p_coins} П-коинов\n` +
                         '🎯 Продолжай проходить тесты!\n' +
-                        '💪 Каждый тест приближает к цели!', internMenuKeyboard).catch(console.error);
+                        '💪 Каждый тест приближает к цели!', internMenuKeyboard).catch((sendErr) => {
+                            console.error('[MENU DEBUG] Failed to send active intern message:', sendErr);
+                        });
                 }
             });
         } else {
+            console.log(`[MENU DEBUG] Processing non-intern path for user ${user.id}`);
             // Получаем активные задачи пользователя
             db.all(`SELECT COUNT(*) as active_tasks FROM tasks
                     WHERE assignee_id = ? AND status = 'pending'`, [user.id], (err, taskCount) => {
@@ -1082,7 +1214,10 @@ function showMainMenu(chatId, user) {
                 const randomGreeting = greetings[Math.floor(Math.random() * greetings.length)];
                 menuText += randomGreeting;
 
-                bot.sendMessage(chatId, menuText, mainMenuKeyboard).catch(console.error);
+                console.log(`[MENU DEBUG] Sending non-intern main menu message for user ${user.id}`);
+                bot.sendMessage(chatId, menuText, mainMenuKeyboard).catch((sendErr) => {
+                    console.error('[MENU DEBUG] Failed to send non-intern main menu message:', sendErr);
+                });
             });
         }
     } catch (error) {
@@ -1090,11 +1225,78 @@ function showMainMenu(chatId, user) {
     }
 }
 
+// New category menu functions
+function showPersonalMenu(chatId) {
+    bot.sendMessage(chatId,
+        '💰 ЛИЧНЫЙ КАБИНЕТ 👤\n\n' +
+        'Здесь ты можешь проверить свой баланс и позицию в рейтинге.\n\n' +
+        '👇 Выбери действие:', personalKeyboard).catch(console.error);
+}
+
+function showLearningMenu(chatId) {
+    let context = global.userMenuContext[chatId];
+    if (!context) {
+        context = { path: ['main'], menuFn: 'main' };
+    }
+    if (context.path[context.path.length - 1] === 'main') {
+        context.path.push('learning');
+        context.menuFn = 'learning';
+    } else {
+        context.path = ['main', 'learning'];
+        context.menuFn = 'learning';
+    }
+    global.userMenuContext[chatId] = context;
+    console.log(`[NAV LOG] Entering learning menu for user ${chatId}, context: ${JSON.stringify(context)}`);
+    bot.sendMessage(chatId,
+        '🎓 ОБУЧЕНИЕ И РАЗВИТИЕ 📚\n\n' +
+        'Прокачивай навыки через курсы и отслеживай прогресс.\n\n' +
+        '👇 Выбери раздел:', learningKeyboard).catch(console.error);
+}
+
+function showWorkMenu(chatId, telegramId) {
+    // Get active tasks count for message
+    db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (!user) return;
+        db.get(`SELECT COUNT(*) as active_tasks FROM tasks WHERE assignee_id = ? AND status = 'pending'`, [user.id], (err, taskCount) => {
+            const activeTasksCount = taskCount ? taskCount.active_tasks : 0;
+            bot.sendMessage(chatId,
+                '📋 РАБОТА И ЗАДАЧИ 💼\n\n' +
+                `📝 Активных задач: ${activeTasksCount}\n` +
+                'Управляй задачами и записывайся на мероприятия.\n\n' +
+                '👇 Выбери раздел:', workKeyboard).catch(console.error);
+        });
+    });
+}
+
+function showFunMenu(chatId) {
+    bot.sendMessage(chatId,
+        '🎮 РАЗВЛЕЧЕНИЯ И НАГРАДЫ 🎁\n\n' +
+        'Сражайся в PVP, покупай в магазине, дари баллы и хвастайся достижениями!\n\n' +
+        '👇 Выбери развлечение:', funKeyboard).catch(console.error);
+}
+
+// Admin sub-menus
+function showAdminEventsMenu(chatId) {
+    bot.sendMessage(chatId,
+        '🗓️ УПРАВЛЕНИЕ МЕРОПРИЯТИЯМИ 📅\n\n' +
+        'Создавай, редактируй и удаляй слоты мероприятий.\n\n' +
+        '👇 Выбери действие:', adminEventsKeyboard).catch(console.error);
+}
+
+function showAdminUsersMenu(chatId) {
+    bot.sendMessage(chatId,
+        '👥 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ 📊\n\n' +
+        'Просматривай пользователей и проверяй заявки на тесты.\n\n' +
+        '👇 Выбери раздел:', adminUsersKeyboard).catch(console.error);
+}
+
 // ========== ФУНКЦИИ ТЕСТИРОВАНИЯ ==========
 
 function showTestMenu(chatId) {
+    global.userMenuContext[chatId] = { path: ['main', 'learning', 'tests'], menuFn: 'tests' };
+    console.log(`[NAV LOG] Entering test menu for user ${chatId}, context: ${JSON.stringify(global.userMenuContext[chatId])}`);
     try {
-        bot.sendMessage(chatId, 
+        bot.sendMessage(chatId,
             '📚 ЦЕНТР ОБУЧЕНИЯ 🎓\n\n' +
             '🌟 Знакомство с компанией - 10 баллов\n' +
             '📈 Основы работы - 15 баллов\n' +
@@ -1292,20 +1494,93 @@ function showInternProgress(chatId, telegramId) {
 }
 
 function backToMainMenu(chatId, telegramId) {
+    // [DEBUG LOG] Clear states on navigation to main menu
+    if (global.userScreenshots[telegramId]) {
+        console.log(`[NAV DEBUG] Clearing userScreenshots state for user ${telegramId}: ${JSON.stringify({type: global.userScreenshots[telegramId].type, step: global.userScreenshots[telegramId].step})}`);
+        delete global.userScreenshots[telegramId];
+    }
+    delete global.userMenuContext[chatId];
+    console.log(`[NAV DEBUG] backToMainMenu invoked for user ${telegramId}, context cleared`);
     try {
         db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
-            if (user) showMainMenu(chatId, user);
+            if (err) {
+                console.error('[NAV DEBUG] DB error in backToMainMenu:', err);
+                return;
+            }
+            if (user) {
+                console.log(`[NAV DEBUG] Fetching user ${user.id} for main menu display`);
+                showMainMenu(chatId, user);
+            } else {
+                console.log(`[NAV DEBUG] No user found for ${telegramId} in backToMainMenu`);
+            }
         });
     } catch (error) {
         console.error('❌ Back to main menu error:', error);
     }
 }
 
+function handleBackNavigation(chatId, telegramId) {
+    // Clear event booking state if active
+    if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'event_booking') {
+        delete global.userScreenshots[telegramId];
+    }
+    let context = global.userMenuContext[chatId];
+    if (!context || context.path.length <= 1) {
+        console.log(`[NAV LOG] No context or root level, going to main for user ${telegramId}`);
+        backToMainMenu(chatId, telegramId);
+        return;
+    }
+
+    // Pop the last menu level
+    context.path.pop();
+    const newPath = context.path;
+    console.log(`[NAV LOG] Back navigation for user ${telegramId}, popped to path: ${newPath.join(' -> ')}`);
+
+    // Show previous menu based on new path
+    const lastMenu = newPath[newPath.length - 1];
+    switch (lastMenu) {
+        case 'learning':
+            showLearningMenu(chatId);
+            break;
+        case 'tests':
+            showTestMenu(chatId);
+            break;
+        case 'personal':
+            showPersonalMenu(chatId);
+            break;
+        case 'work':
+            showWorkMenu(chatId, telegramId);
+            break;
+        case 'fun':
+            showFunMenu(chatId);
+            break;
+        default:
+            // Fallback to main
+            console.log(`[NAV LOG] Unknown previous menu ${lastMenu}, fallback to main for ${telegramId}`);
+            backToMainMenu(chatId, telegramId);
+    }
+}
+
+// Helper function if needed (since chatId == telegramId in 1:1 bot chats)
+function getTelegramIdFromChat(chatId) {
+    return chatId; // Assuming direct chat
+}
+
 // ========== ФУНКЦИИ КУРСОВ ==========
 
 function showCoursesMenu(chatId) {
+    let context = global.userMenuContext[chatId] || { path: ['main'], menuFn: 'main' };
+    if (context.path[context.path.length - 1] === 'learning') {
+        context.path.push('courses');
+        context.menuFn = 'courses';
+    } else {
+        context.path = ['main', 'learning', 'courses'];
+        context.menuFn = 'courses';
+    }
+    global.userMenuContext[chatId] = context;
+    console.log(`[NAV LOG] Entering courses menu for user ${chatId}, context: ${JSON.stringify(context)}`);
     try {
-        bot.sendMessage(chatId, 
+        bot.sendMessage(chatId,
             '🎓 ПРОФЕССИОНАЛЬНЫЕ КУРСЫ 📚\n\n' +
             '📊 Основы аналитики - 30 П-коинов 💎\n' +
             '💼 Менеджмент проектов - 40 П-коинов 💎\n' +
@@ -1750,7 +2025,8 @@ function startGiftProcess(chatId, telegramId) {
                 global.userScreenshots[telegramId] = {
                     type: 'gift',
                     step: 'select_user',
-                    remaining: remaining
+                    remaining: remaining,
+                    failed_attempts: 0
                 };
 
                 // Показываем список пользователей для подарка
@@ -1788,6 +2064,10 @@ function startGiftProcess(chatId, telegramId) {
 }
 
 function handleGiftProcess(chatId, telegramId, text) {
+    // [DEBUG LOG] Gift process entry
+    const giftState = global.userScreenshots[telegramId];
+    console.log(`[GIFT DEBUG] User ${telegramId} text "${text}" | Step: ${giftState ? giftState.step : 'none'}`);
+    
     try {
         const giftData = global.userScreenshots[telegramId];
 
@@ -1795,6 +2075,8 @@ function handleGiftProcess(chatId, telegramId, text) {
             const userIndex = parseInt(text) - 1;
 
             if (isNaN(userIndex) || userIndex < 0 || userIndex >= giftData.users.length) {
+                // [DEBUG LOG] Invalid user number in gift selection
+                console.log(`[GIFT DEBUG] Invalid user index "${text}" for user ${telegramId}, users length: ${giftData.users.length}`);
                 bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
                 return;
             }
@@ -1998,7 +2280,8 @@ function startTaskCreation(chatId, telegramId) {
                     creator_id: user.id,
                     priority: 'medium',
                     reward_coins: 0
-                }
+                },
+                failed_attempts: 0
             };
 
             // Показываем список пользователей для назначения задачи
@@ -3231,6 +3514,10 @@ bot.on('polling_error', (error) => {
 // ========== УЛУЧШЕННЫЕ ФУНКЦИИ ТАСК-ТРЕКЕРА ==========
 
 function handleTaskCreation(chatId, telegramId, text) {
+    // [DEBUG LOG] Task creation entry
+    const taskState = global.userScreenshots[telegramId];
+    console.log(`[TASK DEBUG] User ${telegramId} text "${text}" | Step: ${taskState ? taskState.step : 'none'}`);
+    
     try {
         const taskData = global.userScreenshots[telegramId];
 
@@ -3238,6 +3525,8 @@ function handleTaskCreation(chatId, telegramId, text) {
             const userIndex = parseInt(text) - 1;
 
             if (isNaN(userIndex) || userIndex < 0 || userIndex >= taskData.users.length) {
+                // [DEBUG LOG] Invalid assignee in task creation
+                console.log(`[TASK DEBUG] Invalid assignee index "${text}" for user ${telegramId}, users length: ${taskData.users.length}`);
                 bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
                 return;
             }
@@ -3952,7 +4241,8 @@ function startAddCoins(chatId, telegramId) {
                 global.userScreenshots[telegramId] = {
                     type: 'balance_add',
                     step: 'select_user',
-                    users: users
+                    users: users,
+                    failed_attempts: 0
                 };
 
                 let usersList = '➕ НАЧИСЛИТЬ БАЛЛЫ 💰\n\n';
@@ -3990,7 +4280,8 @@ function startDeductCoins(chatId, telegramId) {
                 global.userScreenshots[telegramId] = {
                     type: 'balance_deduct',
                     step: 'select_user',
-                    users: users
+                    users: users,
+                    failed_attempts: 0
                 };
 
                 let usersList = '➖ СПИСАТЬ БАЛЛЫ 💸\n\n';
@@ -4012,6 +4303,10 @@ function startDeductCoins(chatId, telegramId) {
 }
 
 function handleBalanceAdd(chatId, telegramId, text) {
+    // [DEBUG LOG] Balance add entry
+    const addState = global.userScreenshots[telegramId];
+    console.log(`[BALANCE ADD DEBUG] User ${telegramId} text "${text}" | Step: ${addState ? addState.step : 'none'}`);
+    
     try {
         const addData = global.userScreenshots[telegramId];
 
@@ -4019,6 +4314,8 @@ function handleBalanceAdd(chatId, telegramId, text) {
             const userIndex = parseInt(text) - 1;
 
             if (isNaN(userIndex) || userIndex < 0 || userIndex >= addData.users.length) {
+                // [DEBUG LOG] Invalid user in balance add
+                console.log(`[BALANCE ADD DEBUG] Invalid user index "${text}" for user ${telegramId}, users length: ${addData.users.length}`);
                 bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
                 return;
             }
@@ -4075,6 +4372,14 @@ function handleBalanceDeduct(chatId, telegramId, text) {
             const userIndex = parseInt(text) - 1;
 
             if (isNaN(userIndex) || userIndex < 0 || userIndex >= deductData.users.length) {
+                deductData.failed_attempts = (deductData.failed_attempts || 0) + 1;
+                console.log(`[BALANCE DEDUCT DEBUG] Failed attempt ${deductData.failed_attempts} for user ${telegramId}, text: "${text}"`);
+                if (deductData.failed_attempts >= 3) {
+                    bot.sendMessage(chatId, '❌ Слишком много неверных попыток! Возвращаемся в меню.').catch(console.error);
+                    delete global.userScreenshots[telegramId];
+                    backToMainMenu(chatId, telegramId);
+                    return;
+                }
                 bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
                 return;
             }
