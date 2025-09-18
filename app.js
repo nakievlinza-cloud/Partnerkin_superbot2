@@ -455,6 +455,15 @@ bot.on('message', (msg) => {
 
         if (text && text.startsWith('/')) return;
         
+        // Обработка фото для рассылки (если админ в режиме broadcast и ожидает медиа)
+        if (msg.photo && global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'broadcast' && global.userScreenshots[telegramId].step === 'media') {
+            const fileId = msg.photo[msg.photo.length - 1].file_id;
+            global.userScreenshots[telegramId].media.push({ type: 'photo', media: fileId });
+            console.log(`[BROADCAST LOG] Admin ${telegramId} added photo to broadcast media. Total media: ${global.userScreenshots[telegramId].media.length}`);
+            bot.sendMessage(chatId, `📸 Фото добавлено! (${global.userScreenshots[telegramId].media.length} шт.)\nОтправь еще или напиши "готово".`).catch(console.error);
+            return;
+        }
+
         // Обработка скриншотов
         if (msg.photo) {
             handleScreenshot(chatId, telegramId, msg.photo[msg.photo.length - 1].file_id, username);
@@ -2793,7 +2802,24 @@ function handleBroadcastMessage(chatId, telegramId, text) {
                 '📝 Напиши текст сообщения для рассылки:').catch(console.error);
 
         } else if (broadcastData.step === 'message') {
-            sendBroadcast(chatId, telegramId, broadcastData, text);
+            broadcastData.message = text;
+            broadcastData.media = []; // Initialize media array
+            broadcastData.step = 'media';
+
+            bot.sendMessage(chatId,
+                `📝 Текст сообщения сохранен!\n\n` +
+                `💬 "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"\n\n` +
+                '📸 Теперь отправь фото (одно или несколько) для рассылки.\n' +
+                '⚡ Или напиши "готово" чтобы отправить только текст.\n' +
+                '💡 Фото будут отправлены как медиа-группа с текстом как подписью к первому фото.').catch(console.error);
+
+        } else if (broadcastData.step === 'media') {
+            if (text.toLowerCase() === 'готово' || text === '/done') {
+                console.log(`[BROADCAST LOG] Admin ${telegramId} finished media input. Media count: ${broadcastData.media.length}, sending broadcast.`);
+                sendBroadcast(chatId, telegramId, broadcastData, broadcastData.message);
+            } else {
+                bot.sendMessage(chatId, '📸 Ожидаю фото или "готово" для завершения.').catch(console.error);
+            }
         }
     } catch (error) {
         console.error('❌ Handle broadcast message error:', error);
@@ -2829,29 +2855,59 @@ function sendBroadcast(chatId, telegramId, broadcastData, message) {
                 return;
             }
 
+            const media = broadcastData.media || [];
+            console.log(`[BROADCAST LOG] Starting broadcast to ${users.length} users. Media count: ${media.length}, text: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
+
             let successCount = 0;
             let errorCount = 0;
 
-            const broadcastMessage = `📢 СООБЩЕНИЕ ОТ АДМИНИСТРАЦИИ\n\n${message}`;
-
             users.forEach(user => {
-                bot.sendMessage(user.telegram_id, broadcastMessage)
-                    .then(() => successCount++)
-                    .catch(() => errorCount++);
+                if (media.length > 0) {
+                    // Prepare media group
+                    const mediaGroup = media.map((item, index) => ({
+                        type: 'photo',
+                        media: item.media,
+                        caption: index === 0 ? `📢 СООБЩЕНИЕ ОТ АДМИНИСТРАЦИИ\n\n${message}` : undefined
+                    }));
+
+                    bot.sendMediaGroup(user.telegram_id, mediaGroup)
+                        .then(() => {
+                            successCount++;
+                            console.log(`[BROADCAST LOG] Media group sent successfully to ${user.telegram_id}`);
+                        })
+                        .catch((err) => {
+                            errorCount++;
+                            console.error(`[BROADCAST LOG] Failed to send media group to ${user.telegram_id}:`, err);
+                        });
+                } else {
+                    // Send text only
+                    const broadcastMessage = `📢 СООБЩЕНИЕ ОТ АДМИНИСТРАЦИИ\n\n${message}`;
+                    bot.sendMessage(user.telegram_id, broadcastMessage)
+                        .then(() => {
+                            successCount++;
+                            console.log(`[BROADCAST LOG] Text message sent successfully to ${user.telegram_id}`);
+                        })
+                        .catch((err) => {
+                            errorCount++;
+                            console.error(`[BROADCAST LOG] Failed to send text to ${user.telegram_id}:`, err);
+                        });
+                }
             });
 
             // Отчет админу
             setTimeout(() => {
+                const mediaInfo = media.length > 0 ? ` + ${media.length} фото` : '';
                 bot.sendMessage(chatId,
                     `📢 РАССЫЛКА ЗАВЕРШЕНА! ✅\n\n` +
                     `👥 Всего получателей: ${users.length}\n` +
                     `✅ Доставлено: ${successCount}\n` +
                     `❌ Ошибок: ${errorCount}\n\n` +
-                    `📝 Текст: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"\n\n` +
+                    `📝 Текст: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"${mediaInfo}\n\n` +
                     '🎯 Рассылка выполнена успешно!', adminKeyboard).catch(console.error);
 
                 delete global.userScreenshots[telegramId];
-            }, 2000);
+                console.log(`[BROADCAST LOG] Broadcast completed. Success: ${successCount}, Errors: ${errorCount}`);
+            }, 3000); // Slightly longer delay for media sends
         });
     } catch (error) {
         console.error('❌ Send broadcast error:', error);
