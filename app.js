@@ -3,6 +3,8 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const sqlite3 = require('sqlite3').verbose();
 const config = require('./config');
+const fs = require('fs');
+const PDFDocument = require('pdfkit');
 
 // Получаем токен из конфигурации
 const token = config.TELEGRAM_TOKEN;
@@ -166,6 +168,48 @@ db.serialize(() => {
         FOREIGN KEY(creator_id) REFERENCES users(id)
     )`);
 
+    // Helper function to check if column exists
+    function columnExists(table, column, callback) {
+        db.all(`PRAGMA table_info(${table})`, (err, rows) => {
+            if (err) {
+                callback(false);
+                return;
+            }
+            const exists = rows.some(row => row.name === column);
+            callback(exists);
+        });
+    }
+
+    // Safe ALTERs for new fields
+    columnExists('invoices', 'work_type', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN work_type TEXT", (err) => {
+                if (err) console.log("ALTER work_type error:", err.message);
+            });
+        }
+    });
+    columnExists('invoices', 'org_address', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN org_address TEXT", (err) => {
+                if (err) console.log("ALTER org_address error:", err.message);
+            });
+        }
+    });
+    columnExists('invoices', 'invoice_number', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN invoice_number INTEGER", (err) => {
+                if (err) console.log("ALTER invoice_number error:", err.message);
+            });
+        }
+    });
+    columnExists('invoices', 'invoice_date', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE invoices ADD COLUMN invoice_date DATE DEFAULT CURRENT_DATE", (err) => {
+                if (err) console.log("ALTER invoice_date error:", err.message);
+            });
+        }
+    });
+
     // Комментарии к задачам
     db.run(`CREATE TABLE IF NOT EXISTS task_comments (
         id INTEGER PRIMARY KEY,
@@ -270,6 +314,7 @@ const workKeyboard = {
     reply_markup: {
         keyboard: [
             ['📋 Мои задачи', '🎯 Мероприятия'],
+            ['📄 Создать инвойс'],
             ['🔙 В главное меню']
         ],
         resize_keyboard: true
@@ -737,6 +782,20 @@ function showEventDetails(chatId, telegramId, event) {
             showLearningMenu(chatId);
         } else if (text === '📋 Работа') {
             showWorkMenu(chatId, telegramId);
+        } else if (text === '📄 Создать инвойс') {
+            db.get("SELECT * FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                if (err || !user) {
+                    bot.sendMessage(chatId, '❌ Ошибка!').catch(console.error);
+                    return;
+                }
+                // Assume for all users, or check role if needed
+                global.userScreenshots[telegramId] = {
+                    type: 'invoice_creation',
+                    step: 'org_name',
+                    data: {}
+                };
+                bot.sendMessage(chatId, "📄 Создание инвойса. Шаг 1: Название организации? (Введите на английском для PDF)").catch(console.error);
+            });
         } else if (text === '🎮 Развлечения') {
             showFunMenu(chatId);
         }
@@ -959,6 +1018,16 @@ function showEventDetails(chatId, telegramId, event) {
             setTaskReward(chatId, telegramId, text);
         }
 
+        // /cancel handler
+        if (text === '/cancel') {
+            if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'invoice_creation') {
+                delete global.userScreenshots[telegramId];
+                bot.sendMessage(chatId, "❌ Создание инвойса отменено. Возврат в меню.").catch(console.error);
+                backToMainMenu(chatId, telegramId);
+                return;
+            }
+        }
+
         // Обработка текстового ввода и состояний админа
         else {
             handleTextInput(chatId, telegramId, text, username);
@@ -1020,6 +1089,103 @@ function handleTextInput(chatId, telegramId, text, username) {
     }
     
     try {
+        // Invoice creation state
+        if (currentState && currentState.type === 'invoice_creation') {
+            const state = currentState;
+            const data = state.data;
+            let valid = true;
+            let nextStep = '';
+            let prompt = '';
+
+            switch (state.step) {
+                case 'org_name':
+                    if (text.trim() === '') {
+                        valid = false;
+                        prompt = "❌ Введите корректное название!";
+                    } else {
+                        data.org_name = text.trim();
+                        nextStep = 'org_address';
+                        prompt = `✅ Организация: ${data.org_name}. Шаг 2: Адрес организации? (Введите на английском для PDF)`;
+                    }
+                    break;
+                case 'org_address':
+                    if (text.trim() === '') {
+                        valid = false;
+                        prompt = "❌ Введите корректный адрес!";
+                    } else {
+                        data.org_address = text.trim();
+                        nextStep = 'work_type';
+                        prompt = `✅ Адрес: ${data.org_address}. Шаг 3: Тип работы (e.g., 'website branding')? (Введите на английском для PDF)`;
+                    }
+                    break;
+                case 'work_type':
+                    if (text.trim() === '') {
+                        valid = false;
+                        prompt = "❌ Введите корректный тип работы!";
+                    } else {
+                        data.work_type = text.trim();
+                        nextStep = 'quantity';
+                        prompt = `✅ Тип: ${data.work_type}. Шаг 4: Количество?`;
+                    }
+                    break;
+                case 'quantity':
+                    const qty = parseInt(text);
+                    if (isNaN(qty) || qty <= 0) {
+                        valid = false;
+                        prompt = "❌ Введите положительное число!";
+                    } else {
+                        data.quantity = qty;
+                        nextStep = 'amount';
+                        prompt = `✅ Кол-во: ${data.quantity}. Шаг 5: Сумма за единицу (USDT)?`;
+                    }
+                    break;
+                case 'amount':
+                    const amt = parseFloat(text);
+                    if (isNaN(amt) || amt <= 0) {
+                        valid = false;
+                        prompt = "❌ Введите положительное число!";
+                    } else {
+                        data.amount = amt;
+                        data.total = data.quantity * data.amount;
+                        data.start_date = new Date().toLocaleDateString('ru-RU');
+                        data.end_date = data.start_date;
+                        data.description = null;
+                        db.get("SELECT COALESCE(MAX(invoice_number), 0) + 1 AS next FROM invoices", (err, row) => {
+                            if (err) {
+                                console.error('Error getting next invoice number:', err);
+                                bot.sendMessage(chatId, "Error preparing preview.").catch(console.error);
+                                return;
+                            }
+                            const next_seq = row.next;
+                            state.step = 'preview';
+                            global.userScreenshots[telegramId] = state;
+                            const previewText = `📋 Предпросмотр: Организация: ${data.org_name}, Адрес: ${data.org_address}, Тип: ${data.work_type}, Кол-во: ${data.quantity}, Сумма/ед: ${data.amount}, Итого: ${data.total} USDT. Invoice #: ${next_seq}. Подтвердить?`;
+                            bot.sendMessage(chatId, previewText, {
+                                reply_markup: {
+                                    inline_keyboard: [
+                                        [{text: '✅ Да', callback_data: 'confirm_invoice'}],
+                                        [{text: '❌ Нет', callback_data: 'cancel_invoice'}]
+                                    ]
+                                }
+                            }).catch(console.error);
+                        });
+                        return;
+                    }
+                    break;
+                default:
+                    valid = false;
+            }
+
+            if (valid && nextStep !== 'preview') {
+                state.step = nextStep;
+                global.userScreenshots[telegramId] = state;
+                bot.sendMessage(chatId, prompt).catch(console.error);
+            } else if (!valid) {
+                bot.sendMessage(chatId, prompt).catch(console.error);
+            }
+            return;
+        }
+
         // Обработка создания мероприятий админом
         if (global.adminStates[telegramId]) {
             handleAdminEventCreation(chatId, telegramId, text);
@@ -3353,14 +3519,67 @@ bot.on('callback_query', (callbackQuery) => {
         const data = callbackQuery.data;
         const chatId = callbackQuery.message.chat.id;
         const messageId = callbackQuery.message.message_id;
-        const adminTelegramId = callbackQuery.from.id;
+        const telegramId = callbackQuery.from.id;
         
-        if (data.startsWith('approve_')) {
+        if (data === 'confirm_invoice') {
+            console.log(`[INVOICE DEBUG] Confirm invoice callback for user ${telegramId}, state: ${JSON.stringify(global.userScreenshots[telegramId])}`);
+            const state = global.userScreenshots[telegramId];
+            if (!state || state.type !== 'invoice_creation' || state.step !== 'preview') {
+                bot.answerCallbackQuery(callbackQuery.id, {text: '❌ Сессия истекла! Начните заново.'});
+                return;
+            }
+            const data = state.data;
+            db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                if (err || !user) {
+                    bot.answerCallbackQuery(callbackQuery.id, {text: '❌ Ошибка!'});
+                    return;
+                }
+                // Get next invoice_number
+                db.get("SELECT COALESCE(MAX(invoice_number), 0) + 1 AS next FROM invoices", (err, row) => {
+                    if (err) {
+                        bot.answerCallbackQuery(callbackQuery.id, {text: '❌ Ошибка БД!'});
+                        return;
+                    }
+                    const invoice_number = row.next;
+                    const invoice_date = new Date().toLocaleDateString('ru-RU');
+                    const fileName = `INV-${invoice_number}_${new Date().toISOString().split('T')[0]}.pdf`;
+                    const filePath = `./invoices/${fileName}`;
+                    data.creator_id = user.id;
+                    data.invoice_number = invoice_number;
+                    data.invoice_date = invoice_date;
+                    data.file_path = filePath;
+                    // Generate PDF
+                    generateInvoicePDF(data, filePath);
+                    // Insert to DB
+                    db.run(`INSERT INTO invoices (creator_id, company_name, org_address, work_type, start_date, end_date, quantity, amount, description, file_path, invoice_number, invoice_date)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [data.creator_id, data.org_name, data.org_address, data.work_type, data.start_date, data.end_date, data.quantity, data.amount, data.description, data.file_path, data.invoice_number, data.invoice_date], (err) => {
+                        if (err) {
+                            bot.answerCallbackQuery(callbackQuery.id, {text: '❌ Ошибка сохранения!'});
+                            return;
+                        }
+                        // Send document
+                        bot.sendDocument(chatId, filePath, {caption: "✅ Инвойс создан и отправлен! Сохранен в БД."}).catch(console.error);
+                        bot.answerCallbackQuery(callbackQuery.id, {text: '✅ Инвойс создан!'});
+                        delete global.userScreenshots[telegramId];
+                        // Delete preview message
+                        bot.deleteMessage(chatId, messageId).catch(console.error);
+                    });
+                });
+            });
+        } else if (data === 'cancel_invoice') {
+            if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'invoice_creation') {
+                delete global.userScreenshots[telegramId];
+                bot.answerCallbackQuery(callbackQuery.id, {text: '❌ Отменено.'});
+                bot.editMessageText("❌ Создание инвойса отменено. Возврат в меню.", {chat_id: chatId, message_id: messageId}).catch(console.error);
+                backToMainMenu(chatId, telegramId);
+            }
+        } else if (data.startsWith('approve_')) {
             const submissionId = data.split('_')[1];
-            approveSubmission(chatId, messageId, adminTelegramId, submissionId, callbackQuery.id);
+            approveSubmission(chatId, messageId, telegramId, submissionId, callbackQuery.id);
         } else if (data.startsWith('reject_')) {
             const submissionId = data.split('_')[1];
-            rejectSubmission(chatId, messageId, adminTelegramId, submissionId, callbackQuery.id);
+            rejectSubmission(chatId, messageId, telegramId, submissionId, callbackQuery.id);
         }
     } catch (error) {
         console.error('❌ Callback query error:', error);
@@ -4449,3 +4668,118 @@ process.on('SIGINT', () => {
         process.exit(0);
     });
 });
+
+// PDF Generation Function
+function generateInvoicePDF(data, filePath) {
+    // Simple transliteration function for Cyrillic to Latin
+    function transliterate(text) {
+        if (!text) return '';
+        const map = {
+            'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+            'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+            'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+            'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch', 'ъ': '',
+            'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+            'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'Yo',
+            'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+            'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+            'Ф': 'F', 'Х': 'H', 'Ц': 'Ts', 'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Shch', 'Ъ': '',
+            'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya'
+        };
+        return text.replace(/[а-яёА-ЯЁ]/g, char => map[char] || char);
+    }
+
+    const transOrgName = transliterate(data.org_name || 'Company Name');
+    const transOrgAddress = transliterate(data.org_address || 'Address Line 1\nAddress Line 2');
+    const transDescription = transliterate(data.work_type || 'Advertising services on Partnerkin.com');
+
+    const doc = new PDFDocument({ size: 'A4', margin: 36 }); // 0.5in margins
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    const pageWidth = 595; // A4 width in points
+    const pageHeight = 842; // A4 height
+    const margin = 36;
+    const contentWidth = pageWidth - 2 * margin;
+    const tableWidth = contentWidth * 0.8; // 80% width
+    const tableX = margin + (contentWidth - tableWidth) / 2; // Centered
+
+    // 1. Header Section (~100pt from top margin, so y=36+100=136pt)
+    const headerY = margin + 100;
+    const detailsY = headerY + 20;
+
+    // Left: Dynamic payer organization details
+    doc.font('Helvetica-Bold').fontSize(12).text(transliterate(data.org_name || 'Company'), margin + 20, headerY, { lineGap: 4 });
+    doc.font('Helvetica').fontSize(10).text(transliterate(data.org_address || 'Address'), margin + 20, headerY + 20, { lineGap: 3 });
+
+    // Right: Invoice details (x ≈ pageWidth - 100pt = 595-100=495pt, but with margin: margin + contentWidth - 100 ≈ 36 + 523 - 100 = 459pt)
+    const rightX = pageWidth - margin - 100;
+    const invoiceDate = data.invoice_date || new Date().toLocaleDateString('ru-RU');
+    const invoiceNumber = `INV-${data.invoice_number || '001'}`;
+    const subject = 'advertising on Partnerkin.com';
+    doc.font('Helvetica').fontSize(10).text(`Invoice Date: ${invoiceDate} | Invoice Number: ${invoiceNumber} | Subject: ${subject}`, rightX, detailsY, { align: 'right', lineGap: 0 });
+
+    // 2. Invoice Table (~200-300pt below header: headerY=136 + 250 ≈ 386pt, but specs y=300 absolute? Use y=300 for table start)
+    const tableY = 236; // Retained positioning to avoid overlaps with headers
+    const rowHeight = 30; // With 10pt padding top/bottom
+    const colWidth = tableWidth / 3; // Equal widths for balanced 3-column layout: Description, Quantity, Amount
+
+    // Headers - vertically centered in cell (cell top at tableY + 10, height rowHeight=30, text at midpoint)
+    // Updated: Removed "Description" column; added "Quantity" in its place
+    const cellMidpoint = 15; // (rowHeight / 2)
+    doc.font('Helvetica-Bold').fontSize(10);
+    doc.text('Description', tableX, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth }); // First column: service description (work_type)
+    doc.text('Quantity', tableX + colWidth, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth }); // New: Quantity column
+    doc.text('Amount', tableX + 2 * colWidth, tableY + 10 + cellMidpoint, { align: 'center', width: colWidth }); // Retained: Amount (formatted to 1 decimal)
+
+    // Data row - single row for this invoice (no multi-item loop needed)
+    // Updated: Description shows work_type; Quantity from data.quantity (integer); Amount uses toFixed(1) for precision (e.g., 100.0)
+    // Removed org_info from table (already in header); no Description column content
+    doc.font('Helvetica').fontSize(10);
+    const transWorkType = transliterate(data.work_type || 'Advertising services'); // Description: service type
+    const quantityStr = data.quantity ? data.quantity.toString() : '1'; // Quantity: integer from data
+    const amountStr = `${(data.total || 0).toFixed(1)} USDT`; // Amount: formatted to 1 decimal place
+    doc.text(transWorkType, tableX, tableY + 10 + rowHeight + cellMidpoint, { align: 'center', width: colWidth });
+    doc.text(quantityStr, tableX + colWidth, tableY + 10 + rowHeight + cellMidpoint, { align: 'center', width: colWidth });
+    doc.text(amountStr, tableX + 2 * colWidth, tableY + 10 + rowHeight + cellMidpoint, { align: 'center', width: colWidth });
+
+    // Borders: 1pt solid black, around cells with padding (unchanged structure for 2 rows)
+    const borderWidth = 1;
+    doc.lineWidth(borderWidth);
+    // Outer border
+    doc.rect(tableX, tableY + 10, tableWidth, rowHeight * 2).stroke(); // Header + data row height
+    // Vertical lines (3 columns: 4 lines)
+    let currentX = tableX;
+    for (let i = 0; i <= 3; i++) { // 4 lines for 3 columns
+        doc.moveTo(currentX, tableY + 10).lineTo(currentX, tableY + 10 + rowHeight * 2).stroke();
+        currentX += colWidth;
+    }
+    // Horizontal lines
+    doc.moveTo(tableX, tableY + 10).lineTo(tableX + tableWidth, tableY + 10).stroke(); // Top
+    doc.moveTo(tableX, tableY + 10 + rowHeight).lineTo(tableX + tableWidth, tableY + 10 + rowHeight).stroke(); // Between header/data
+    doc.moveTo(tableX, tableY + 10 + rowHeight * 2).lineTo(tableX + tableWidth, tableY + 10 + rowHeight * 2).stroke(); // Bottom
+
+    // 3. Total Payment Line (fixed at 380pt)
+    // Updated: Total formatted to 1 decimal place for consistency with Amount column
+    const totalY = 380;
+    doc.font('Helvetica-Bold').fontSize(12).text('Total Payment ', tableX, totalY);
+    // Dashed line spanning most width
+    doc.dash(5, { space: 5 }).moveTo(tableX + 100, totalY + 5).lineTo(tableX + tableWidth - 50, totalY + 5).undash().stroke();
+    doc.text(` ${(data.total || 0).toFixed(1)} USDT`, tableX + tableWidth - 80, totalY, { align: 'right' });
+
+    // Payment details closer to total (fixed at 410pt)
+    const paymentY = 410;
+    doc.font('Helvetica').fontSize(10).text('USDT TRC-20', margin + 20, paymentY, { lineGap: 3 });
+    doc.font('Courier').fontSize(10).text('TWwhE7Sa6CUPN6Lq6NwKDQNrMqFJSNMZPR', margin + 20, paymentY + 15, { lineGap: 3 }); // Monospace for wallet, aligned in footer area
+
+    // Company footer below payment (fixed at 450pt)
+    const companyFooterY = 450;
+    doc.font('Helvetica-Bold').fontSize(10).text('WARHOLA LTD', margin + 20, companyFooterY, { lineGap: 3 });
+    doc.font('Helvetica').fontSize(10).text('27 Old Gloucester Street, London, United Kingdom, WC1N 3AX\nadv@partnerkin.com', margin + 20, companyFooterY + 15, { lineGap: 3 });
+
+    doc.end();
+
+    stream.on('finish', () => {
+        console.log(`PDF generated and saved to ${filePath} with even vertical distribution and single-page fit.`);
+    });
+}
