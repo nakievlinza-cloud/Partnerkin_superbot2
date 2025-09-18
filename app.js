@@ -337,6 +337,17 @@ const broadcastKeyboard = {
     }
 };
 
+const balanceKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['➕ Начислить баллы', '➖ Списать баллы'],
+            ['👥 Список пользователей', '📊 Балансы'],
+            ['🔙 Назад в админку']
+        ],
+        resize_keyboard: true
+    }
+};
+
 const taskPriorityKeyboard = {
     reply_markup: {
         keyboard: [
@@ -456,112 +467,249 @@ bot.on('message', (msg) => {
         if (text === '👶 Я стажер') {
             registerUser(chatId, telegramId, username, 'стажер');
         } 
-        else if (text === '🧓 Я старичок') {
+        if (text === '🧓 Я старичок') {
             registerUser(chatId, telegramId, username, 'старичок');
         }
         
         // ВХОД В АДМИНКУ
-        else if (text === 'partnerkin1212') {
+        if (text === 'partnerkin1212') {
             handleAdminLogin(chatId, telegramId);
         }
         
-        // ========== АДМИНСКИЕ ФУНКЦИИ ==========
-        else if (text === '🗓️ Создать мероприятие') {
-            startEventCreation(chatId, telegramId);
+// ========== ФУНКЦИИ МЕРОПРИЯТИЙ ==========
+
+function showAvailableEvents(chatId, telegramId) {
+    try {
+        db.all("SELECT * FROM event_slots WHERE status = 'active' ORDER BY date, time", (err, slots) => {
+            if (!slots || slots.length === 0) {
+                bot.sendMessage(chatId,
+                    '📅 МЕРОПРИЯТИЯ 📋\n\n' +
+                    '📋 Мероприятий пока нет!\n\n' +
+                    '🎯 Следи за обновлениями!').catch(console.error);
+                return;
+            }
+
+            let eventsText = '📅 ДОСТУПНЫЕ МЕРОПРИЯТИЯ 📋\n\n';
+
+            slots.forEach((slot, index) => {
+                eventsText += `${index + 1}. ${slot.event_name}\n`;
+                eventsText += `   📅 ${slot.date} в ${slot.time}\n`;
+                eventsText += `   📍 ${slot.location}\n`;
+                eventsText += `   👥 ${slot.current_participants}/${slot.max_participants}\n`;
+                eventsText += `   💰 ${slot.points_reward} коинов\n\n`;
+            });
+
+            eventsText += '👇 Выбери мероприятие по номеру или используй кнопки категорий:';
+
+            global.userScreenshots[telegramId] = {
+                type: 'event_selection',
+                events: slots
+            };
+
+            const categoryKeyboard = {
+                keyboard: [
+                    ['Зарядка', 'Покер'],
+                    ['Корпоратив', 'Тренинги'],
+                    ['🔙 Назад в меню']
+                ],
+                resize_keyboard: true
+            };
+
+            bot.sendMessage(chatId, eventsText, categoryKeyboard).catch(console.error);
+        });
+    } catch (error) {
+        console.error('❌ Show available events error:', error);
+    }
+}
+
+function handleEventSelection(chatId, telegramId, text) {
+    try {
+        const eventData = global.userScreenshots[telegramId];
+        const eventIndex = parseInt(text) - 1;
+
+        if (isNaN(eventIndex) || eventIndex < 0 || eventIndex >= eventData.events.length) {
+            bot.sendMessage(chatId, '❌ Неверный номер мероприятия!').catch(console.error);
+            return;
         }
-        else if (text === '📅 Все мероприятия') {
-            showAllEventSlotsAdmin(chatId, telegramId);
-        }
-        else if (text === '✏️ Редактировать слот') {
-            startSlotEdit(chatId, telegramId);
-        }
-        else if (text === '🗑️ Удалить слот') {
-            startSlotDelete(chatId, telegramId);
-        }
-        else if (text === '📢 Рассылка') {
-            startBroadcast(chatId, telegramId);
-        }
-        else if (text === '📋 Заявки на проверку') {
-            showTestSubmissions(chatId, telegramId);
-        }
-        else if (text === '👥 Пользователи') {
-            showUsersList(chatId, telegramId);
-        }
-        else if (text === '📊 Статистика') {
-            showAdminStats(chatId, telegramId);
-        }
-        else if (text === '💰 Управление балансом') {
-            showBalanceManagement(chatId, telegramId);
-        }
-        else if (text === '🎉 Достижения') {
-            showAchievementsAdmin(chatId, telegramId);
-        }
-        else if (text === '🔙 Назад в админку') {
-            backToAdminMenu(chatId, telegramId);
-        }
+
+        const selectedEvent = eventData.events[eventIndex];
+        showEventDetails(chatId, telegramId, selectedEvent);
+        delete global.userScreenshots[telegramId];
+    } catch (error) {
+        console.error('❌ Handle event selection error:', error);
+    }
+}
+
+function showEventDetails(chatId, telegramId, event) {
+    try {
+        const signupKeyboard = {
+            keyboard: [
+                ['📅 Записаться на ' + event.event_name],
+                ['🔙 Назад к мероприятиям']
+            ],
+            resize_keyboard: true
+        };
+
+        bot.sendMessage(chatId,
+            `🎯 МЕРОПРИЯТИЕ: ${event.event_name}\n\n` +
+            `📅 Дата: ${event.date}\n` +
+            `⏰ Время: ${event.time}\n` +
+            `📍 Место: ${event.location}\n` +
+            `👥 Участников: ${event.current_participants}/${event.max_participants}\n` +
+            `💰 Награда: ${event.points_reward} П-коинов\n\n` +
+            '👇 Хочешь записаться?', signupKeyboard).catch(console.error);
+    } catch (error) {
+        console.error('❌ Show event details error:', error);
+    }
+         }
+
+         if (text === '📅 Мероприятия') {
+             showAvailableEvents(chatId, telegramId);
+         }
+         if (text === '🔙 Назад к мероприятиям') {
+             showAvailableEvents(chatId, telegramId);
+         }
+         if (text.startsWith('📅 Записаться на ')) {
+             const eventName = text.replace('📅 Записаться на ', '');
+             handleEventSignup(chatId, telegramId, eventName);
+             delete global.userScreenshots[telegramId];
+         }
+         if (text === '🔙 Назад в меню') {
+             // Clear event booking state if active
+             if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'event_booking') {
+                 delete global.userScreenshots[telegramId];
+             }
+             backToMainMenu(chatId, telegramId);
+         }
+
+         // ========== МЕРОПРИЯТИЯ (CONSOLIDATED HANDLER) ==========
+         if (text === '📅 Все мероприятия') {
+             console.log(`[DEBUG FIRST HANDLER] All events triggered for user ${telegramId}, admin check starting`);
+             // Clear event booking state if active
+             if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'event_booking') {
+                 delete global.userScreenshots[telegramId];
+             }
+             // Branch based on admin status
+             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+                 console.log(`[DEBUG FIRST HANDLER] Admin check result for ${telegramId}: ${admin ? 'Admin' : 'Non-admin'}`);
+                 if (admin) {
+                     console.log(`[DEBUG FIRST HANDLER] Calling showAllEventSlotsAdmin for ${telegramId}`);
+                     showAllEventSlotsAdmin(chatId, telegramId);
+                 } else {
+                     console.log(`[DEBUG FIRST HANDLER] Calling showAllEventSlots for ${telegramId}`);
+                     showAllEventSlots(chatId);
+                 }
+             });
+         }
+
+         // ========== АДМИНСКИЕ ФУНКЦИИ ==========
+         if (text === '🗓️ Создать мероприятие') {
+             startEventCreation(chatId, telegramId);
+         }
+         if (text === '✏️ Редактировать слот') {
+             startSlotEdit(chatId, telegramId);
+         }
+         if (text === '🗑️ Удалить слот') {
+             startSlotDelete(chatId, telegramId);
+         }
+         if (text === '📢 Рассылка') {
+             startBroadcast(chatId, telegramId);
+         }
+         if (text === '📋 Заявки на проверку') {
+             showTestSubmissions(chatId, telegramId);
+         }
+         if (text === '👥 Пользователи') {
+             showUsersList(chatId, telegramId);
+         }
+         if (text === '📊 Статистика') {
+             showAdminStats(chatId, telegramId);
+         }
+         if (text === '💰 Управление балансом') {
+             showBalanceManagement(chatId, telegramId);
+         }
+         if (text === '🎉 Достижения') {
+             showAchievementsAdmin(chatId, telegramId);
+         }
+         if (text === '🔙 Назад в админку') {
+             backToAdminMenu(chatId, telegramId);
+         }
+
+         // ========== УПРАВЛЕНИЕ БАЛАНСОМ ==========
+         else if (text === '➕ Начислить баллы') {
+             startAddCoins(chatId, telegramId);
+         }
+         else if (text === '➖ Списать баллы') {
+             startDeductCoins(chatId, telegramId);
+         }
+         else if (text === '👥 Список пользователей') {
+             showUsersList(chatId, telegramId);
+         }
+         else if (text === '📊 Балансы') {
+             showBalances(chatId, telegramId);
+         }
         else if (text === '🔙 Выйти из админки') {
             exitAdminMode(chatId, telegramId);
         }
         
         // ========== ОСНОВНОЕ МЕНЮ ==========
-        else if (text === '💰 Мой баланс') {
+        if (text === '💰 Мой баланс') {
             showBalance(chatId, telegramId);
         }
-        else if (text === '📚 Пройти тестирование') {
+        if (text === '📚 Пройти тестирование') {
             showTestMenu(chatId);
         }
-        else if (text === '📊 Мой прогресс') {
+        if (text === '📊 Мой прогресс') {
             showInternProgress(chatId, telegramId);
         }
-        else if (text === '🔄 Главное меню' || text === '🔙 Назад в меню') {
+        if (text === '🔄 Главное меню' || text === '🔙 Назад в меню') {
             backToMainMenu(chatId, telegramId);
         }
         
         // ========== ТЕСТЫ ДЛЯ СТАЖЕРОВ ==========
-        else if (text === '🌟 Знакомство с компанией') {
+        if (text === '🌟 Знакомство с компанией') {
             selectTest(chatId, telegramId, 'Знакомство с компанией', 10);
         }
-        else if (text === '📈 Основы работы') {
+        if (text === '📈 Основы работы') {
             selectTest(chatId, telegramId, 'Основы работы', 15);
         }
-        else if (text === '🎯 Продуктовая линейка') {
+        if (text === '🎯 Продуктовая линейка') {
             selectTest(chatId, telegramId, 'Продуктовая линейка', 15);
         }
-        
+
         // ========== ФУНКЦИИ ДЛЯ СТАРИЧКОВ ==========
-        else if (text === '⚔️ PVP Сражения') {
+        if (text === '⚔️ PVP Сражения') {
             showPVPMenu(chatId, telegramId);
         }
-        else if (text === '🛒 Магазин') {
+        if (text === '🛒 Магазин') {
             showShop(chatId, telegramId);
         }
-        else if (text === '🎓 Курсы') {
+        if (text === '🎓 Курсы') {
             showCoursesMenu(chatId);
         }
-        else if (text === '🎯 Мероприятия') {
+        if (text === '🎯 Мероприятия') {
             showEventsMenu(chatId);
         }
-        else if (text === '📋 Мои задачи') {
+        if (text === '📋 Мои задачи') {
             showTasksMenu(chatId, telegramId);
         }
-        else if (text === '🎁 Подарить баллы') {
+        if (text === '🎁 Подарить баллы') {
             startGiftProcess(chatId, telegramId);
         }
-        else if (text === '🏆 Рейтинг') {
+        if (text === '🏆 Рейтинг') {
             showRating(chatId, telegramId);
         }
-        else if (text === '🎉 Похвастаться') {
+        if (text === '🎉 Похвастаться') {
             startAchievementCreation(chatId, telegramId);
         }
-        
+
         // ========== PVP МЕНЮ ==========
-        else if (text === '🎯 Найти противника') {
+        if (text === '🎯 Найти противника') {
             findOpponent(chatId, telegramId);
         }
-        else if (text === '🏆 Мой рейтинг') {
+        if (text === '🏆 Мой рейтинг') {
             showRating(chatId, telegramId);
         }
-        else if (text === '⚡ Восстановить энергию') {
+        if (text === '⚡ Восстановить энергию') {
             restoreEnergy(chatId, telegramId);
         }
         
@@ -594,7 +742,7 @@ bot.on('message', (msg) => {
         }
         
         // ========== МЕРОПРИЯТИЯ ==========
-        else if (text === '🏃‍♂️ Зарядка') {
+        else if (text === '🏃‍♂️ Зарядка' || text === 'Зарядка') {
             // Проверяем, не в админке ли пользователь
             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
                 if (admin && global.adminStates[telegramId]) {
@@ -606,7 +754,7 @@ bot.on('message', (msg) => {
                 }
             });
         }
-        else if (text === '🎰 Покер') {
+        else if (text === '🎰 Покер' || text === 'Покер') {
             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
                 if (admin && global.adminStates[telegramId]) {
                     handleAdminEventCreation(chatId, telegramId, text);
@@ -615,7 +763,7 @@ bot.on('message', (msg) => {
                 }
             });
         }
-        else if (text === '🎉 Корпоратив') {
+        else if (text === '🎉 Корпоратив' || text === 'Корпоратив') {
             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
                 if (admin && global.adminStates[telegramId]) {
                     handleAdminEventCreation(chatId, telegramId, text);
@@ -624,7 +772,7 @@ bot.on('message', (msg) => {
                 }
             });
         }
-        else if (text === '📚 Тренинги') {
+        else if (text === '📚 Тренинги' || text === 'Тренинги') {
             db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
                 if (admin && global.adminStates[telegramId]) {
                     handleAdminEventCreation(chatId, telegramId, text);
@@ -633,55 +781,53 @@ bot.on('message', (msg) => {
                 }
             });
         }
-        else if (text === '📅 Все мероприятия') {
-            showAllEventSlots(chatId);
-        }
+        // REMOVED DUPLICATE HANDLER FOR '📅 Все мероприятия' - handled in first block to prevent duplicates
 
         // ========== РАССЫЛКИ (АДМИН) ==========
-        else if (text === '👥 Всем пользователям') {
+        if (text === '👥 Всем пользователям') {
             setBroadcastTarget(chatId, telegramId, 'all');
         }
-        else if (text === '🧓 Только старичкам') {
+        if (text === '🧓 Только старичкам') {
             setBroadcastTarget(chatId, telegramId, 'seniors');
         }
-        else if (text === '👶 Только стажерам') {
+        if (text === '👶 Только стажерам') {
             setBroadcastTarget(chatId, telegramId, 'interns');
         }
-        else if (text === '📊 Выборочно') {
+        if (text === '📊 Выборочно') {
             setBroadcastTarget(chatId, telegramId, 'selective');
         }
 
         // ========== МЕНЮ ЗАДАЧ ==========
-        else if (text === '📝 Мои задачи') {
+        if (text === '📝 Мои задачи') {
             showMyTasks(chatId, telegramId);
         }
-        else if (text === '✅ Завершенные') {
+        if (text === '✅ Завершенные') {
             showCompletedTasks(chatId, telegramId);
         }
-        else if (text === '🎯 Создать задачу') {
+        if (text === '🎯 Создать задачу') {
             startTaskCreation(chatId, telegramId);
         }
-        else if (text === '👥 Задачи команды') {
+        if (text === '👥 Задачи команды') {
             showTeamTasks(chatId, telegramId);
         }
-        else if (text === '📦 Отложенные') {
+        if (text === '📦 Отложенные') {
             showPostponedTasks(chatId, telegramId);
         }
-        else if (text === '❌ Отмененные') {
+        if (text === '❌ Отмененные') {
             showCancelledTasks(chatId, telegramId);
         }
 
         // ========== ДЕЙСТВИЯ С ЗАДАЧАМИ ==========
-        else if (text === '✅ Принять') {
+        if (text === '✅ Принять') {
             acceptTask(chatId, telegramId);
         }
-        else if (text === '💬 Комментировать') {
+        if (text === '💬 Комментировать') {
             startTaskComment(chatId, telegramId);
         }
-        else if (text === '📦 Отложить') {
+        if (text === '📦 Отложить') {
             postponeTask(chatId, telegramId);
         }
-        else if (text === '❌ Отменить') {
+        if (text === '❌ Отменить') {
             cancelTask(chatId, telegramId);
         }
         else if (text === '🔄 Отправить дальше') {
@@ -772,6 +918,24 @@ function handleTextInput(chatId, telegramId, text, username) {
             return;
         }
 
+        // Обработка выбора мероприятия
+        if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'event_selection') {
+            handleEventSelection(chatId, telegramId, text);
+            return;
+        }
+
+        // Обработка начисления баллов админом
+        if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'balance_add') {
+            handleBalanceAdd(chatId, telegramId, text);
+            return;
+        }
+
+        // Обработка списания баллов админом
+        if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'balance_deduct') {
+            handleBalanceDeduct(chatId, telegramId, text);
+            return;
+        }
+
         // Обработка рассылок админом
         if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'broadcast') {
             handleBroadcastMessage(chatId, telegramId, text);
@@ -795,17 +959,24 @@ function handleTextInput(chatId, telegramId, text, username) {
         
         // Обработка записи на мероприятие по номеру слота
         if (global.userScreenshots[telegramId] && global.userScreenshots[telegramId].type === 'event_booking') {
+            console.log(`[DEBUG TEXT INPUT] User ${telegramId} text "${text}", state: event_booking, slots count: ${global.userScreenshots[telegramId].slots.length}`);
             const slotNumber = parseInt(text);
             const eventData = global.userScreenshots[telegramId];
-
-            if (isNaN(slotNumber) || slotNumber < 1 || slotNumber > eventData.slots.length) {
+ 
+            if (isNaN(slotNumber)) {
+                console.log(`[DEBUG SLOT ERROR] Non-numeric text "${text}", clearing state silently for user ${telegramId}`);
+                delete global.userScreenshots[telegramId];
+                // Allow fall-through to other handlers if needed, but since end, just clear
+            } else if (slotNumber < 1 || slotNumber > eventData.slots.length) {
+                console.log(`[DEBUG SLOT ERROR] Invalid slot number ${slotNumber} for user ${telegramId}`);
                 bot.sendMessage(chatId, '🤷‍♂️ Такого номера слота нет! Попробуй еще раз 🔢').catch(console.error);
                 return;
+            } else {
+                bookEventSlot(chatId, telegramId, eventData.slots[slotNumber - 1]);
+                delete global.userScreenshots[telegramId];
+                console.log(`[DEBUG EVENT BOOKING] Cleared state for user ${telegramId} after booking slot ${slotNumber}`);
+                return;
             }
-
-            bookEventSlot(chatId, telegramId, eventData.slots[slotNumber - 1]);
-            delete global.userScreenshots[telegramId];
-            return;
         }
 
         // Обработка процесса подарков
@@ -1395,16 +1566,13 @@ function showEventsMenu(chatId) {
 
 function showEventSlots(chatId, telegramId, eventName) {
     try {
-        db.all("SELECT * FROM event_slots WHERE event_name = ? AND status = 'active' AND current_participants < max_participants ORDER BY date, time", 
+        db.all("SELECT * FROM event_slots WHERE category = ? AND status = 'active' AND current_participants < max_participants ORDER BY date, time", 
                [eventName], (err, slots) => {
             
             if (!slots || slots.length === 0) {
                 bot.sendMessage(chatId, 
-                    `📅 ${eventName} 🎯\n\n` +
-                    '⏰ Расписание скоро будет, ожидайте! 🔄\n' +
-                    '👨‍💼 Мы уже его обновляем!\n\n' +
-                    '🔔 Включи уведомления, чтобы не пропустить!\n' +
-                    '💫 Скоро будет много интересного!').catch(console.error);
+                    `📅 ${eventName} 🎯\n\n` + 
+                    'В этой категории пока нет доступных мероприятий. 😕').catch(console.error);
                 return;
             }
             
@@ -1485,15 +1653,17 @@ function bookEventSlot(chatId, telegramId, slot) {
 }
 
 function showAllEventSlots(chatId) {
+    console.log(`[DEBUG USER VIEW] showAllEventSlots called for chatId ${chatId}`);
     try {
         db.all("SELECT * FROM event_slots WHERE status = 'active' ORDER BY date, time", (err, slots) => {
+            console.log(`[DEBUG USER VIEW] DB query completed, slots count: ${slots ? slots.length : 0}, error: ${err ? 'Yes' : 'No'}`);
             if (!slots || slots.length === 0) {
-                bot.sendMessage(chatId, 
+                bot.sendMessage(chatId,
                     '📅 РАСПИСАНИЕ ВСЕХ МЕРОПРИЯТИЙ 🗓️\n\n' +
                     '⏰ Пока что занятий нет, но уже в процессе их размещения! 🔄\n\n' +
                     '👨‍💼 Администраторы работают над расписанием!\n' +
                     '🔔 Следи за обновлениями!\n' +
-                    '💫 Скоро будет много интересного!').catch(console.error);
+                    '💫 Скоро будет много интересного!').catch((sendErr) => console.error('Send empty message error:', sendErr));
                 return;
             }
             
@@ -1510,7 +1680,11 @@ function showAllEventSlots(chatId) {
             
             scheduleText += '🎯 Для записи выбери конкретное мероприятие!';
             
-            bot.sendMessage(chatId, scheduleText).catch(console.error);
+            console.log(`[DEBUG USER VIEW] Sending message with ${slots.length} slots`);
+            bot.sendMessage(chatId, scheduleText).catch((sendErr) => {
+                console.error('❌ User view send error:', sendErr);
+            });
+            console.log(`[DEBUG USER VIEW] Message sent successfully`);
         });
     } catch (error) {
         console.error('❌ Show all event slots error:', error);
@@ -2243,9 +2417,9 @@ function handleAdminEventCreation(chatId, telegramId, text) {
         
         switch (state.step) {
             case 'category':
-                if (['🏃‍♂️ Зарядка', '🎰 Покер', '🎉 Корпоратив', '📚 Тренинги'].includes(text)) {
-                    state.eventData.category = text.replace(/^[\w\s]+\s/, '').trim();
-                    state.eventData.name = text.replace(/[\w\s]+\s/, '').trim();
+            if (['🏃‍♂️ Зарядка', '🎰 Покер', '🎉 Корпоратив', '📚 Тренинги'].includes(text)) {
+                state.eventData.category = text.substring(text.indexOf(' ') + 1).trim();
+                state.eventData.name = text.replace(/[\w\s]+\s/, '').trim();
                     state.step = 'custom_name';
                     
                     bot.sendMessage(chatId, 
@@ -2378,44 +2552,46 @@ function createEventSlot(chatId, telegramId, eventData) {
 }
 
 function showAllEventSlotsAdmin(chatId, telegramId) {
-    try {
-        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
-            if (!admin) {
-                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
-                return;
-            }
+    console.log(`[DEBUG ADMIN VIEW] showAllEventSlotsAdmin called for chatId ${chatId}, user ${telegramId}`);
+    db.all("SELECT * FROM event_slots ORDER BY date, time", (err, slots) => {
+        console.log(`[DEBUG ADMIN VIEW] DB query completed, slots count: ${slots ? slots.length : 0}, error: ${err ? 'Yes' : 'No'}`);
+        if (err) {
+            console.error('❌ Show all event slots admin DB error:', err);
+            bot.sendMessage(chatId, '❌ Ошибка загрузки мероприятий!').catch((sendErr) => console.error('Send error:', sendErr));
+            return;
+        }
+        if (!slots || slots.length === 0) {
+            console.log(`[DEBUG ADMIN VIEW] No slots, sending empty message`);
+            bot.sendMessage(chatId,
+                '📅 ВСЕ МЕРОПРИЯТИЯ 🗓️\n\n' +
+                '📋 Мероприятий пока нет!\n\n' +
+                '🎯 Создай первое мероприятие через\n' +
+                '"🗓️ Создать мероприятие"', adminKeyboard).catch((sendErr) => console.error('Send empty message error:', sendErr));
+            return;
+        }
 
-            db.all("SELECT * FROM event_slots ORDER BY date, time", (err, slots) => {
-                if (!slots || slots.length === 0) {
-                    bot.sendMessage(chatId,
-                        '📅 ВСЕ МЕРОПРИЯТИЯ 🗓️\n\n' +
-                        '📋 Мероприятий пока нет!\n\n' +
-                        '🎯 Создай первое мероприятие через\n' +
-                        '"🗓️ Создать мероприятие"', adminKeyboard).catch(console.error);
-                    return;
-                }
+        let slotsText = '📅 ВСЕ МЕРОПРИЯТИЯ 🗓️\n\n';
 
-                let slotsText = '📅 ВСЕ МЕРОПРИЯТИЯ 🗓️\n\n';
-
-                slots.forEach((slot, index) => {
-                    const status = slot.status === 'active' ? '🟢' : '🔴';
-                    slotsText += `${index + 1}. ${status} ${slot.event_name}\n`;
-                    slotsText += `   📅 ${slot.date} в ${slot.time}\n`;
-                    slotsText += `   📍 ${slot.location}\n`;
-                    slotsText += `   👥 ${slot.current_participants}/${slot.max_participants}\n`;
-                    slotsText += `   💰 ${slot.points_reward} коинов\n`;
-                    slotsText += `   🆔 ID: ${slot.id}\n\n`;
-                });
-
-                slotsText += '✏️ Для редактирования используй "Редактировать слот"\n';
-                slotsText += '🗑️ Для удаления используй "Удалить слот"';
-
-                bot.sendMessage(chatId, slotsText, adminKeyboard).catch(console.error);
-            });
+        slots.forEach((slot, index) => {
+            const status = slot.status === 'active' ? '🟢' : '🔴';
+            slotsText += `${index + 1}. ${status} ${slot.event_name}\n`;
+            slotsText += `   📅 ${slot.date} в ${slot.time}\n`;
+            slotsText += `   📍 ${slot.location}\n`;
+            slotsText += `   👥 ${slot.current_participants}/${slot.max_participants}\n`;
+            slotsText += `   💰 ${slot.points_reward} коинов\n`;
+            slotsText += `   🆔 ID: ${slot.id}\n\n`;
         });
-    } catch (error) {
-        console.error('❌ Show all event slots admin error:', error);
-    }
+
+        slotsText += '✏️ Для редактирования используй "Редактировать слот"\n';
+        slotsText += '🗑️ Для удаления используй "Удалить слот"';
+
+        console.log(`[DEBUG ADMIN VIEW] Sending message with ${slots.length} slots`);
+        bot.sendMessage(chatId, slotsText, adminKeyboard).catch((sendErr) => {
+            console.error('❌ Admin view send error:', sendErr);
+            bot.sendMessage(chatId, '❌ Ошибка отправки расписания!').catch(console.error);
+        });
+        console.log(`[DEBUG ADMIN VIEW] Message sent successfully`);
+    });
 }
 
 function startSlotEdit(chatId, telegramId) {
@@ -3322,6 +3498,7 @@ function showBalanceManagement(chatId, telegramId) {
                 '💰 УПРАВЛЕНИЕ БАЛАНСОМ 💳\n\n' +
                 '➕ Начислить баллы пользователям\n' +
                 '➖ Списать баллы за нарушения\n' +
+                '👥 Список пользователей\n' +
                 '📊 Просмотр всех балансов\n\n' +
                 '👇 Выбери действие:', balanceKeyboard).catch(console.error);
         });
@@ -3662,6 +3839,239 @@ function handleAchievementComment(chatId, telegramId, text) {
         });
     } catch (error) {
         console.error('❌ Handle achievement comment error:', error);
+    }
+}
+
+// ========== ФУНКЦИИ УПРАВЛЕНИЯ БАЛАНСОМ ==========
+
+function showBalances(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            db.all("SELECT username, full_name, p_coins FROM users WHERE is_registered = 1 ORDER BY p_coins DESC",
+                   (err, users) => {
+
+                if (!users || users.length === 0) {
+                    bot.sendMessage(chatId, '👻 Нет пользователей!').catch(console.error);
+                    return;
+                }
+
+                let balancesText = '📊 БАЛАНСЫ ПОЛЬЗОВАТЕЛЕЙ 💰\n\n';
+                const medals = ['🥇', '🥈', '🥉'];
+
+                users.forEach((user, index) => {
+                    const name = user.full_name || user.username || 'Неизвестный';
+                    const medal = index < 3 ? medals[index] : `${index + 1}.`;
+                    balancesText += `${medal} ${name} - ${user.p_coins} П-коинов\n`;
+                });
+
+                balancesText += '\n💰 Общий баланс команды отличный!';
+
+                bot.sendMessage(chatId, balancesText, balanceKeyboard).catch(console.error);
+            });
+        });
+    } catch (error) {
+        console.error('❌ Show balances error:', error);
+    }
+}
+
+function startAddCoins(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            db.all("SELECT id, username, full_name, telegram_id FROM users WHERE is_registered = 1 ORDER BY full_name", (err, users) => {
+                if (!users || users.length === 0) {
+                    bot.sendMessage(chatId, '👻 Нет пользователей для начисления!').catch(console.error);
+                    return;
+                }
+
+                global.userScreenshots[telegramId] = {
+                    type: 'balance_add',
+                    step: 'select_user',
+                    users: users
+                };
+
+                let usersList = '➕ НАЧИСЛИТЬ БАЛЛЫ 💰\n\n';
+                usersList += 'Выбери пользователя:\n\n';
+
+                users.forEach((user, index) => {
+                    const name = user.full_name || user.username || 'Неизвестный';
+                    usersList += `${index + 1}. ${name} (@${user.username})\n`;
+                });
+
+                usersList += '\n🔢 Напиши номер пользователя:';
+
+                bot.sendMessage(chatId, usersList).catch(console.error);
+            });
+        });
+    } catch (error) {
+        console.error('❌ Start add coins error:', error);
+    }
+}
+
+function startDeductCoins(chatId, telegramId) {
+    try {
+        db.get("SELECT * FROM admins WHERE telegram_id = ?", [telegramId], (err, admin) => {
+            if (!admin) {
+                bot.sendMessage(chatId, '❌ Нет прав администратора!').catch(console.error);
+                return;
+            }
+
+            db.all("SELECT id, username, full_name, telegram_id FROM users WHERE is_registered = 1 ORDER BY full_name", (err, users) => {
+                if (!users || users.length === 0) {
+                    bot.sendMessage(chatId, '👻 Нет пользователей для списания!').catch(console.error);
+                    return;
+                }
+
+                global.userScreenshots[telegramId] = {
+                    type: 'balance_deduct',
+                    step: 'select_user',
+                    users: users
+                };
+
+                let usersList = '➖ СПИСАТЬ БАЛЛЫ 💸\n\n';
+                usersList += 'Выбери пользователя:\n\n';
+
+                users.forEach((user, index) => {
+                    const name = user.full_name || user.username || 'Неизвестный';
+                    usersList += `${index + 1}. ${name} (@${user.username})\n`;
+                });
+
+                usersList += '\n🔢 Напиши номер пользователя:';
+
+                bot.sendMessage(chatId, usersList).catch(console.error);
+            });
+        });
+    } catch (error) {
+        console.error('❌ Start deduct coins error:', error);
+    }
+}
+
+function handleBalanceAdd(chatId, telegramId, text) {
+    try {
+        const addData = global.userScreenshots[telegramId];
+
+        if (addData.step === 'select_user') {
+            const userIndex = parseInt(text) - 1;
+
+            if (isNaN(userIndex) || userIndex < 0 || userIndex >= addData.users.length) {
+                bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
+                return;
+            }
+
+            addData.selectedUser = addData.users[userIndex];
+            addData.step = 'enter_amount';
+
+            bot.sendMessage(chatId,
+                `➕ Начислить баллы пользователю: ${addData.selectedUser.full_name || addData.selectedUser.username}\n\n` +
+                '💰 Сколько баллов начислить?\n' +
+                '🔢 Напиши положительное число:').catch(console.error);
+
+        } else if (addData.step === 'enter_amount') {
+            const amount = parseInt(text);
+
+            if (isNaN(amount) || amount <= 0) {
+                bot.sendMessage(chatId, '❌ Сумма должна быть положительным числом! 💰').catch(console.error);
+                return;
+            }
+
+            // Получаем имя админа
+            db.get("SELECT full_name, username FROM users WHERE telegram_id = ?", [telegramId], (err, adminUser) => {
+                const adminName = adminUser ? (adminUser.full_name || adminUser.username || 'Админ') : 'Админ';
+
+                // Начисляем баллы
+                db.run("UPDATE users SET p_coins = p_coins + ? WHERE id = ?", [amount, addData.selectedUser.id], () => {
+                    // Уведомляем пользователя
+                    bot.sendMessage(addData.selectedUser.telegram_id,
+                        `💰 ${adminName} НАЧИСЛИЛ БАЛЛЫ! 🎉\n\n` +
+                        `➕ +${amount} П-коинов\n\n` +
+                        '🎯 Продолжай в том же духе!').catch(console.error);
+
+                    // Уведомляем админа
+                    bot.sendMessage(chatId,
+                        `✅ БАЛЛЫ НАЧИСЛЕНЫ! 💰\n\n` +
+                        `👤 ${addData.selectedUser.full_name || addData.selectedUser.username}\n` +
+                        `➕ +${amount} П-коинов\n\n` +
+                        '🎉 Операция завершена!', balanceKeyboard).catch(console.error);
+
+                    delete global.userScreenshots[telegramId];
+                });
+            });
+        }
+    } catch (error) {
+        console.error('❌ Handle balance add error:', error);
+    }
+}
+
+function handleBalanceDeduct(chatId, telegramId, text) {
+    try {
+        const deductData = global.userScreenshots[telegramId];
+
+        if (deductData.step === 'select_user') {
+            const userIndex = parseInt(text) - 1;
+
+            if (isNaN(userIndex) || userIndex < 0 || userIndex >= deductData.users.length) {
+                bot.sendMessage(chatId, '❌ Неверный номер пользователя! Попробуй еще раз 🔢').catch(console.error);
+                return;
+            }
+
+            deductData.selectedUser = deductData.users[userIndex];
+            deductData.step = 'enter_amount';
+
+            bot.sendMessage(chatId,
+                `➖ Списать баллы у пользователя: ${deductData.selectedUser.full_name || deductData.selectedUser.username}\n\n` +
+                '💸 Сколько баллов списать?\n' +
+                '🔢 Напиши положительное число:').catch(console.error);
+
+        } else if (deductData.step === 'enter_amount') {
+            const amount = parseInt(text);
+
+            if (isNaN(amount) || amount <= 0) {
+                bot.sendMessage(chatId, '❌ Сумма должна быть положительным числом! 💸').catch(console.error);
+                return;
+            }
+
+            // Получаем имя админа
+            db.get("SELECT full_name, username FROM users WHERE telegram_id = ?", [telegramId], (err, adminUser) => {
+                const adminName = adminUser ? (adminUser.full_name || adminUser.username || 'Админ') : 'Админ';
+
+                // Проверяем баланс пользователя
+                db.get("SELECT p_coins FROM users WHERE id = ?", [deductData.selectedUser.id], (err, userData) => {
+                    if (!userData || userData.p_coins < amount) {
+                        bot.sendMessage(chatId, '❌ У пользователя недостаточно баллов! 😔').catch(console.error);
+                        return;
+                    }
+
+                    // Списываем баллы
+                    db.run("UPDATE users SET p_coins = p_coins - ? WHERE id = ?", [amount, deductData.selectedUser.id], () => {
+                        // Уведомляем пользователя
+                        bot.sendMessage(deductData.selectedUser.telegram_id,
+                            `💸 ${adminName} СПИСАЛ БАЛЛЫ 😔\n\n` +
+                            `➖ -${amount} П-коинов\n\n` +
+                            '💪 Старайся лучше!').catch(console.error);
+
+                        // Уведомляем админа
+                        bot.sendMessage(chatId,
+                            `✅ БАЛЛЫ СПИСАНЫ! 💸\n\n` +
+                            `👤 ${deductData.selectedUser.full_name || deductData.selectedUser.username}\n` +
+                            `➖ -${amount} П-коинов\n\n` +
+                            '🎯 Операция завершена!', balanceKeyboard).catch(console.error);
+
+                        delete global.userScreenshots[telegramId];
+                    });
+                });
+            });
+        }
+    } catch (error) {
+        console.error('❌ Handle balance deduct error:', error);
     }
 }
 
