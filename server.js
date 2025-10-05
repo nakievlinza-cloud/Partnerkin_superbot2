@@ -74,9 +74,16 @@ app.get('/ping', (req, res) => {
     res.status(200).json({ pong: Date.now() });
 });
 
-// Статическая раздача веб-приложения
+// Главная страница - статус бота
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'webapp', 'index.html'));
+    res.json({
+        bot: "Partnerkin SuperBot",
+        status: "running",
+        version: "2.0",
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        message: "🚀 Бот работает 24/7!"
+    });
 });
 
 // Обработка ошибок
