@@ -4,6 +4,7 @@
   "description": "",
   "main": "start.js",
   "scripts": {
+    "build": "npm rebuild sqlite3 --update-binary",
     "start": "node start.js",
     "bot": "node app.js",
     "server": "node server.js",
@@ -25,5 +26,8 @@
     "pdfkit": "^0.17.2",
     "qrcode": "^1.5.4",
     "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "node-gyp": "^10.0.0"
   }
 }
