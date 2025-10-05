@@ -2,7 +2,7 @@
 
 module.exports = {
     // Токен Telegram бота - получите в @BotFather
-    TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN || 'ВАШ_ТОКЕН_ЗДЕСЬ',
+    TELEGRAM_TOKEN: process.env.BOT_TOKEN || process.env.TELEGRAM_TOKEN || 'ВАШ_ТОКЕН_ЗДЕСЬ',
 
     // Настройки базы данных
     DATABASE: {
