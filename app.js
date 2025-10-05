@@ -3558,8 +3558,7 @@ function showWallet(chatId, telegramId) {
                     { text: '🏦 Обмен на баллы', callback_data: 'start_pcoin_exchange' }
                 ],
                 [
-                    { text: '🙏 Попросить П-коины', callback_data: 'start_pcoin_request' },
-                    { text: '🤝 Мой QR-код', callback_data: 'generate_my_qr' }
+                    { text: '🙏 Попросить П-коины', callback_data: 'start_pcoin_request' }
                 ],
                 [
                     user.mining_farm_level > 0
