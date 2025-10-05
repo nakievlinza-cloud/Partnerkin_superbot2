@@ -453,6 +453,29 @@ db.serialize(() => {
         }
     });
 
+    // Mining Farm fields
+    columnExists('users', 'mining_farm_level', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN mining_farm_level INTEGER DEFAULT 0", (err) => {
+                if (err) console.log("ALTER mining_farm_level error:", err.message);
+            });
+        }
+    });
+    columnExists('users', 'mining_farm_last_collected', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN mining_farm_last_collected DATETIME", (err) => {
+                if (err) console.log("ALTER mining_farm_last_collected error:", err.message);
+            });
+        }
+    });
+    columnExists('users', 'mining_farm_accumulated', (exists) => {
+        if (!exists) {
+            db.run("ALTER TABLE users ADD COLUMN mining_farm_accumulated REAL DEFAULT 0", (err) => {
+                if (err) console.log("ALTER mining_farm_accumulated error:", err.message);
+            });
+        }
+    });
+
     // Комментарии к задачам
     db.run(`CREATE TABLE IF NOT EXISTS task_comments (
         id INTEGER PRIMARY KEY,
@@ -3512,10 +3535,20 @@ function processGift(chatId, telegramId, giftData, message) {
 }
 
 function showWallet(chatId, telegramId) {
-    db.get("SELECT wallet_address, p_coins, company_points FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+    db.get("SELECT wallet_address, p_coins, company_points, mining_farm_level, mining_farm_last_collected, mining_farm_accumulated FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
         if (err || !user) {
             bot.sendMessage(chatId, '❌ Ошибка! Пользователь не найден.');
             return;
+        }
+
+        // Calculate accumulated mining coins
+        let accumulatedCoins = user.mining_farm_accumulated || 0;
+        if (user.mining_farm_level > 0 && user.mining_farm_last_collected) {
+            const lastCollected = new Date(user.mining_farm_last_collected);
+            const now = new Date();
+            const hoursPassedSinceLastCollection = (now - lastCollected) / (1000 * 60 * 60);
+            const miningRate = user.mining_farm_level; // 1 coin per hour per level
+            accumulatedCoins += Math.floor(hoursPassedSinceLastCollection * miningRate);
         }
 
         const keyboard = {
@@ -3527,16 +3560,30 @@ function showWallet(chatId, telegramId) {
                 [
                     { text: '🙏 Попросить П-коины', callback_data: 'start_pcoin_request' },
                     { text: '🤝 Мой QR-код', callback_data: 'generate_my_qr' }
+                ],
+                [
+                    user.mining_farm_level > 0
+                        ? { text: `⛏️ Майнинг-ферма ${accumulatedCoins > 0 ? `(+${accumulatedCoins})` : ''}`, callback_data: 'mining_farm_manage' }
+                        : { text: '🏗️ Купить майнинг-ферму', callback_data: 'mining_farm_buy' }
                 ]
             ]
         };
 
         if (user.wallet_address) {
-            bot.sendMessage(chatId, 
+            let miningInfo = '';
+            if (user.mining_farm_level > 0) {
+                const farmNames = ['', 'Basic', 'Advanced', 'Pro'];
+                miningInfo = `\n**⛏️ Майнинг-ферма:** ${farmNames[user.mining_farm_level]} (${user.mining_farm_level} П-коин/час)`;
+                if (accumulatedCoins > 0) {
+                    miningInfo += `\n**💰 К сбору:** ${accumulatedCoins} П-коинов`;
+                }
+            }
+
+            bot.sendMessage(chatId,
                 `👛 **Ваш кошелек**\n\n` +
                 `**Адрес:** \`${user.wallet_address}\`\n` +
                 `**Баланс:** ${user.p_coins} П-коинов\n` +
-                `**Баллы:** ${user.company_points} баллов`,
+                `**Баллы:** ${user.company_points} баллов${miningInfo}`,
                 { parse_mode: 'Markdown', reply_markup: keyboard }
             );
         } else {
@@ -3546,11 +3593,20 @@ function showWallet(chatId, telegramId) {
                     bot.sendMessage(chatId, '❌ Ошибка при создании кошелька. Попробуйте еще раз.');
                     return;
                 }
-                bot.sendMessage(chatId, 
+                let miningInfo = '';
+                if (user.mining_farm_level > 0) {
+                    const farmNames = ['', 'Basic', 'Advanced', 'Pro'];
+                    miningInfo = `\n**⛏️ Майнинг-ферма:** ${farmNames[user.mining_farm_level]} (${user.mining_farm_level} П-коин/час)`;
+                    if (accumulatedCoins > 0) {
+                        miningInfo += `\n**💰 К сбору:** ${accumulatedCoins} П-коинов`;
+                    }
+                }
+
+                bot.sendMessage(chatId,
                     `🎉 **Вам создан новый кошелек!**\n\n` +
                     `**Адрес:** \`${newAddress}\`\n` +
                     `**Баланс:** ${user.p_coins} П-коинов\n` +
-                    `**Баллы:** ${user.company_points} баллов`,
+                    `**Баллы:** ${user.company_points} баллов${miningInfo}`,
                     { parse_mode: 'Markdown', reply_markup: keyboard }
                 );
             });
@@ -5159,6 +5215,21 @@ bot.on('callback_query', (callbackQuery) => {
         } else if (data === 'generate_my_qr') {
             generateUserQrCode(chatId, telegramId);
             bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'mining_farm_buy') {
+            showMiningFarmPurchase(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'mining_farm_manage') {
+            showMiningFarmManagement(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data.startsWith('mining_farm_purchase_')) {
+            const level = parseInt(data.split('_')[3]);
+            purchaseMiningFarm(chatId, telegramId, level);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'mining_farm_collect') {
+            collectMiningRewards(chatId, telegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
+        } else if (data === 'insufficient_funds') {
+            bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно П-коинов для покупки!', show_alert: true });
         } else if (data.startsWith('approve_pcoin_request_')) {
             const requestId = data.split('_')[3];
             db.get("SELECT * FROM pcoin_requests WHERE id = ?", [requestId], (err, request) => {
@@ -5417,6 +5488,32 @@ cron.schedule('0 0 * * *', () => {
 
 // Cron job to automatically update user statuses
 cron.schedule('*/15 * * * *', updateUserStatusesCron);
+
+// Cron job to accumulate mining farm coins every hour
+cron.schedule('0 * * * *', () => {
+    console.log('🔄 Running mining farm accumulation...');
+
+    db.all("SELECT telegram_id, mining_farm_level, mining_farm_last_collected, mining_farm_accumulated FROM users WHERE mining_farm_level > 0", (err, users) => {
+        if (err) {
+            console.error('❌ Mining farm cron error:', err);
+            return;
+        }
+
+        users.forEach(user => {
+            const miningRate = user.mining_farm_level;
+            const newAccumulated = (user.mining_farm_accumulated || 0) + miningRate;
+
+            db.run("UPDATE users SET mining_farm_accumulated = ? WHERE telegram_id = ?",
+                [newAccumulated, user.telegram_id], (err) => {
+                    if (err) {
+                        console.error(`❌ Mining update error for user ${user.telegram_id}:`, err);
+                    } else {
+                        console.log(`⛏️ User ${user.telegram_id}: +${miningRate} П-коинов (всего накоплено: ${newAccumulated})`);
+                    }
+                });
+        });
+    });
+});
 
 console.log('🚀 Бот "Жизнь в Партнеркине" запускается...');console.log('🎯 Версия: Кнопочная 2.0');
 console.log('📋 Ctrl+C для остановки');
@@ -8339,4 +8436,219 @@ function setVacationBalance(chatId, adminId, userTelegramId, days) {
     } catch (error) {
         console.error('❌ Set vacation balance error:', error);
     }
+}
+
+// ========================================
+// MINING FARM SYSTEM
+// ========================================
+
+function showMiningFarmPurchase(chatId, telegramId) {
+    db.get("SELECT p_coins, mining_farm_level FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка! Пользователь не найден.');
+            return;
+        }
+
+        if (user.mining_farm_level > 0) {
+            bot.sendMessage(chatId, '❌ У вас уже есть майнинг-ферма! Используйте кнопку управления.');
+            return;
+        }
+
+        const farmLevels = [
+            { level: 1, name: 'Basic', price: 500, rate: 1, description: '1 П-коин в час' },
+            { level: 2, name: 'Advanced', price: 1500, rate: 2, description: '2 П-коина в час' },
+            { level: 3, name: 'Pro', price: 3000, rate: 3, description: '3 П-коина в час' }
+        ];
+
+        const keyboard = {
+            inline_keyboard: farmLevels.map(farm => [
+                {
+                    text: `${farm.name} - ${farm.price} П-коинов (${farm.description})`,
+                    callback_data: user.p_coins >= farm.price
+                        ? `mining_farm_purchase_${farm.level}`
+                        : 'insufficient_funds'
+                }
+            ])
+        };
+
+        bot.sendMessage(chatId,
+            `⛏️ **ПОКУПКА МАЙНИНГ-ФЕРМЫ**\n\n` +
+            `💰 Ваш баланс: ${user.p_coins} П-коинов\n\n` +
+            `🏗️ **Доступные фермы:**\n` +
+            `• **Basic** - 500 П-коинов (1 П-коин/час)\n` +
+            `• **Advanced** - 1,500 П-коинов (2 П-коина/час)\n` +
+            `• **Pro** - 3,000 П-коинов (3 П-коина/час)\n\n` +
+            `💡 Ферма приносит пассивный доход 24/7!\n` +
+            `⏰ Собирайте накопленные монеты регулярно.`,
+            { parse_mode: 'Markdown', reply_markup: keyboard }
+        );
+    });
+}
+
+function purchaseMiningFarm(chatId, telegramId, level) {
+    const farmPrices = { 1: 500, 2: 1500, 3: 3000 };
+    const farmNames = { 1: 'Basic', 2: 'Advanced', 3: 'Pro' };
+    const price = farmPrices[level];
+
+    if (!price) {
+        bot.sendMessage(chatId, '❌ Неверный уровень фермы!');
+        return;
+    }
+
+    db.get("SELECT p_coins, mining_farm_level FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка! Пользователь не найден.');
+            return;
+        }
+
+        if (user.mining_farm_level > 0) {
+            bot.sendMessage(chatId, '❌ У вас уже есть майнинг-ферма!');
+            return;
+        }
+
+        if (user.p_coins < price) {
+            bot.sendMessage(chatId, `❌ Недостаточно П-коинов! Нужно ${price}, у вас ${user.p_coins}.`);
+            return;
+        }
+
+        db.run(`UPDATE users SET
+                p_coins = p_coins - ?,
+                mining_farm_level = ?,
+                mining_farm_last_collected = CURRENT_TIMESTAMP,
+                mining_farm_accumulated = 0
+                WHERE telegram_id = ?`,
+            [price, level, telegramId], (err) => {
+                if (err) {
+                    bot.sendMessage(chatId, '❌ Ошибка при покупке фермы!');
+                    return;
+                }
+
+                bot.sendMessage(chatId,
+                    `🎉 **ПОЗДРАВЛЯЕМ!**\n\n` +
+                    `⛏️ Вы купили майнинг-ферму **${farmNames[level]}**!\n\n` +
+                    `💰 Потрачено: ${price} П-коинов\n` +
+                    `📈 Доход: ${level} П-коин/час\n` +
+                    `⏰ Ферма уже начала работать!\n\n` +
+                    `💡 Не забывайте собирать накопленные монеты в кошельке.`,
+                    { parse_mode: 'Markdown' }
+                );
+
+                // Show updated wallet
+                setTimeout(() => showWallet(chatId, telegramId), 1000);
+            });
+    });
+}
+
+function showMiningFarmManagement(chatId, telegramId) {
+    db.get("SELECT p_coins, mining_farm_level, mining_farm_last_collected, mining_farm_accumulated FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка! Пользователь не найден.');
+            return;
+        }
+
+        if (user.mining_farm_level === 0) {
+            bot.sendMessage(chatId, '❌ У вас нет майнинг-фермы! Купите её сначала.');
+            return;
+        }
+
+        // Calculate accumulated coins
+        let accumulatedCoins = user.mining_farm_accumulated || 0;
+        if (user.mining_farm_last_collected) {
+            const lastCollected = new Date(user.mining_farm_last_collected);
+            const now = new Date();
+            const hoursPassedSinceLastCollection = (now - lastCollected) / (1000 * 60 * 60);
+            const miningRate = user.mining_farm_level;
+            accumulatedCoins += Math.floor(hoursPassedSinceLastCollection * miningRate);
+        }
+
+        const farmNames = ['', 'Basic', 'Advanced', 'Pro'];
+        const nextLevelPrices = { 1: 1000, 2: 1500, 3: null }; // Upgrade prices
+
+        const keyboard = {
+            inline_keyboard: [
+                [
+                    { text: `💰 Собрать ${accumulatedCoins} П-коинов`, callback_data: 'mining_farm_collect' }
+                ]
+            ]
+        };
+
+        // Add upgrade option if not max level and user has enough coins
+        if (user.mining_farm_level < 3) {
+            const upgradePrice = nextLevelPrices[user.mining_farm_level];
+            if (user.p_coins >= upgradePrice) {
+                keyboard.inline_keyboard.push([
+                    { text: `⬆️ Улучшить до ${farmNames[user.mining_farm_level + 1]} (${upgradePrice} П-коинов)`, callback_data: `mining_farm_upgrade_${user.mining_farm_level + 1}` }
+                ]);
+            }
+        }
+
+        const nextCollectionTime = user.mining_farm_last_collected
+            ? new Date(new Date(user.mining_farm_last_collected).getTime() + 60 * 60 * 1000).toLocaleTimeString('ru-RU')
+            : 'скоро';
+
+        bot.sendMessage(chatId,
+            `⛏️ **УПРАВЛЕНИЕ МАЙНИНГ-ФЕРМОЙ**\n\n` +
+            `🏗️ **Ферма:** ${farmNames[user.mining_farm_level]}\n` +
+            `📈 **Доход:** ${user.mining_farm_level} П-коин/час\n` +
+            `💰 **К сбору:** ${accumulatedCoins} П-коинов\n` +
+            `⏰ **Следующий доход:** через 1 час\n\n` +
+            `💡 Ферма работает автоматически 24/7!\n` +
+            `🔄 Собирайте монеты регулярно для максимального дохода.`,
+            { parse_mode: 'Markdown', reply_markup: keyboard }
+        );
+    });
+}
+
+function collectMiningRewards(chatId, telegramId) {
+    db.get("SELECT p_coins, mining_farm_level, mining_farm_last_collected, mining_farm_accumulated FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка! Пользователь не найден.');
+            return;
+        }
+
+        if (user.mining_farm_level === 0) {
+            bot.sendMessage(chatId, '❌ У вас нет майнинг-фермы!');
+            return;
+        }
+
+        // Calculate total accumulated coins
+        let totalAccumulated = user.mining_farm_accumulated || 0;
+        if (user.mining_farm_last_collected) {
+            const lastCollected = new Date(user.mining_farm_last_collected);
+            const now = new Date();
+            const hoursPassedSinceLastCollection = (now - lastCollected) / (1000 * 60 * 60);
+            const miningRate = user.mining_farm_level;
+            totalAccumulated += Math.floor(hoursPassedSinceLastCollection * miningRate);
+        }
+
+        if (totalAccumulated === 0) {
+            bot.sendMessage(chatId, '❌ Нет монет для сбора! Подождите немного.');
+            return;
+        }
+
+        // Collect rewards
+        db.run(`UPDATE users SET
+                p_coins = p_coins + ?,
+                mining_farm_last_collected = CURRENT_TIMESTAMP,
+                mining_farm_accumulated = 0
+                WHERE telegram_id = ?`,
+            [totalAccumulated, telegramId], (err) => {
+                if (err) {
+                    bot.sendMessage(chatId, '❌ Ошибка при сборе монет!');
+                    return;
+                }
+
+                bot.sendMessage(chatId,
+                    `✅ **МОНЕТЫ СОБРАНЫ!**\n\n` +
+                    `💰 Получено: +${totalAccumulated} П-коинов\n` +
+                    `💼 Новый баланс: ${user.p_coins + totalAccumulated} П-коинов\n\n` +
+                    `⛏️ Ферма продолжает работать!\n` +
+                    `⏰ Следующий сбор через час.`,
+                    { parse_mode: 'Markdown' }
+                );
+
+                // Show updated wallet
+                setTimeout(() => showWallet(chatId, telegramId), 1000);
+            });
+    });
 }
