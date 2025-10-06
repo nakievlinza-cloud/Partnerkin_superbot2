@@ -1096,6 +1096,68 @@ bot.on('message', (msg) => {
             return;
         }
 
+        // Handle contact sharing for QR code exchange
+        if (msg.contact && currentState && currentState.type === 'contact_exchange' && currentState.step === 'awaiting_contact_share') {
+            const contact = msg.contact;
+            const contactName = `${contact.first_name || ''} ${contact.last_name || ''}`.trim();
+            const contactPhone = contact.phone_number || '';
+
+            // Create contacts table if it doesn't exist
+            db.run(`CREATE TABLE IF NOT EXISTS conference_contacts (
+                id INTEGER PRIMARY KEY,
+                manager_id INTEGER,
+                contact_telegram_id INTEGER,
+                contact_name TEXT,
+                contact_phone TEXT,
+                contact_username TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(manager_id) REFERENCES users(id),
+                UNIQUE(manager_id, contact_telegram_id)
+            )`, (err) => {
+                if (err) console.error('Error creating conference_contacts table:', err);
+            });
+
+            // Save contact to manager's contact list
+            db.run(`INSERT OR REPLACE INTO conference_contacts
+                    (manager_id, contact_telegram_id, contact_name, contact_phone, contact_username)
+                    VALUES (?, ?, ?, ?, ?)`,
+                [currentState.managerId, telegramId, contactName, contactPhone, msg.from.username || null],
+                (err) => {
+                    if (err) {
+                        console.error('Error saving contact:', err);
+                        bot.sendMessage(chatId, '❌ Ошибка при сохранении контакта.');
+                        return;
+                    }
+
+                    // Send confirmation to contact sharer
+                    bot.sendMessage(chatId,
+                        `✅ **Контакт отправлен!**\n\n` +
+                        `Ваши данные переданы **${currentState.managerFullName}** из "Partnerkin.com".\n` +
+                        `Менеджер свяжется с вами в ближайшее время.`,
+                        { parse_mode: 'Markdown' }
+                    );
+
+                    // Get manager's contact info
+                    db.get("SELECT full_name, username FROM users WHERE id = ?", [currentState.managerId], (err, manager) => {
+                        if (!err && manager) {
+                            // Send new contact info to manager
+                            bot.sendMessage(currentState.managerTelegramId,
+                                `🤝 **Новый контакт с конференции!**\n\n` +
+                                `👤 **Имя:** ${contactName}\n` +
+                                `📞 **Телефон:** ${contactPhone}\n` +
+                                `💬 **Telegram:** ${msg.from.username ? '@' + msg.from.username : 'Не указан'}\n` +
+                                `🆔 **ID:** ${telegramId}\n\n` +
+                                `💼 Контакт сохранён в разделе "Контакты с конфы"`,
+                                { parse_mode: 'Markdown' }
+                            );
+                        }
+                    });
+
+                    // Clear state
+                    delete global.userScreenshots[telegramId];
+                });
+            return;
+        }
 
         db.get("SELECT full_name, role FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
             const userInfo = user ? `${user.full_name} (${user.role})` : `@${username}`;
@@ -8648,6 +8710,107 @@ function collectMiningRewards(chatId, telegramId) {
 
                 // Show updated wallet
                 setTimeout(() => showWallet(chatId, telegramId), 1000);
+            });
+    });
+}
+
+// ========================================
+// CONFERENCE CONTACTS SYSTEM
+// ========================================
+
+function showMyContacts(chatId, telegramId) {
+    db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+        if (err || !user) {
+            bot.sendMessage(chatId, '❌ Ошибка! Пользователь не найден.');
+            return;
+        }
+
+        db.all(`SELECT contact_telegram_id, contact_name, contact_phone, contact_username, created_at
+                FROM conference_contacts
+                WHERE manager_id = ?
+                ORDER BY created_at DESC`,
+            [user.id], (err, contacts) => {
+                if (err) {
+                    bot.sendMessage(chatId, '❌ Ошибка при получении контактов.');
+                    console.error('Error fetching conference contacts:', err);
+                    return;
+                }
+
+                if (contacts.length === 0) {
+                    bot.sendMessage(chatId,
+                        `📇 **Контакты с конференций**\n\n` +
+                        `📝 У вас пока нет контактов с конференций.\n\n` +
+                        `💡 Покажите свой QR-код коллегам на конференции,\n` +
+                        `чтобы они поделились контактами с вами!`,
+                        { parse_mode: 'Markdown' }
+                    );
+                    return;
+                }
+
+                let message = `📇 **Контакты с конференций** (${contacts.length})\n\n`;
+
+                contacts.forEach((contact, index) => {
+                    const date = new Date(contact.created_at).toLocaleDateString('ru-RU');
+                    message += `${index + 1}. **${contact.contact_name || 'Имя не указано'}**\n`;
+
+                    if (contact.contact_phone) {
+                        message += `   📞 ${contact.contact_phone}\n`;
+                    }
+
+                    if (contact.contact_username) {
+                        message += `   💬 @${contact.contact_username}\n`;
+                    }
+
+                    message += `   🆔 ${contact.contact_telegram_id}\n`;
+                    message += `   📅 ${date}\n\n`;
+                });
+
+                message += `💡 **Всего контактов:** ${contacts.length}\n`;
+                message += `🤝 Используйте QR-коды для расширения сети!`;
+
+                // Split message if too long
+                if (message.length > 4000) {
+                    const messages = [];
+                    let currentMessage = `📇 **Контакты с конференций** (${contacts.length})\n\n`;
+
+                    contacts.forEach((contact, index) => {
+                        const date = new Date(contact.created_at).toLocaleDateString('ru-RU');
+                        let contactInfo = `${index + 1}. **${contact.contact_name || 'Имя не указано'}**\n`;
+
+                        if (contact.contact_phone) {
+                            contactInfo += `   📞 ${contact.contact_phone}\n`;
+                        }
+
+                        if (contact.contact_username) {
+                            contactInfo += `   💬 @${contact.contact_username}\n`;
+                        }
+
+                        contactInfo += `   🆔 ${contact.contact_telegram_id}\n`;
+                        contactInfo += `   📅 ${date}\n\n`;
+
+                        if (currentMessage.length + contactInfo.length > 3500) {
+                            messages.push(currentMessage);
+                            currentMessage = contactInfo;
+                        } else {
+                            currentMessage += contactInfo;
+                        }
+                    });
+
+                    if (currentMessage.length > 0) {
+                        currentMessage += `💡 **Всего контактов:** ${contacts.length}\n`;
+                        currentMessage += `🤝 Используйте QR-коды для расширения сети!`;
+                        messages.push(currentMessage);
+                    }
+
+                    // Send all message parts
+                    messages.forEach((msg, index) => {
+                        setTimeout(() => {
+                            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+                        }, index * 500);
+                    });
+                } else {
+                    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+                }
             });
     });
 }
