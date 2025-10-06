@@ -1132,28 +1132,44 @@ bot.on('message', (msg) => {
                         return;
                     }
 
-                    // Send confirmation to contact sharer
-                    bot.sendMessage(chatId,
-                        `✅ **Контакт отправлен!**\n\n` +
-                        `Ваши данные переданы **${currentState.managerFullName}** из "Partnerkin.com".\n` +
-                        `Менеджер свяжется с вами в ближайшее время.`,
-                        { parse_mode: 'Markdown' }
-                    );
-
-                    // Get manager's contact info
-                    db.get("SELECT full_name, username FROM users WHERE id = ?", [currentState.managerId], (err, manager) => {
-                        if (!err && manager) {
-                            // Send new contact info to manager
-                            bot.sendMessage(currentState.managerTelegramId,
-                                `🤝 **Новый контакт с конференции!**\n\n` +
-                                `👤 **Имя:** ${contactName}\n` +
-                                `📞 **Телефон:** ${contactPhone}\n` +
-                                `💬 **Telegram:** ${msg.from.username ? '@' + msg.from.username : 'Не указан'}\n` +
-                                `🆔 **ID:** ${telegramId}\n\n` +
-                                `💼 Контакт сохранён в разделе "Контакты с конфы"`,
-                                { parse_mode: 'Markdown' }
-                            );
+                    // Get manager's contact info to send to user
+                    db.get("SELECT full_name, username, telegram_id FROM users WHERE id = ?", [currentState.managerId], (err, manager) => {
+                        if (err || !manager) {
+                            bot.sendMessage(chatId, '❌ Ошибка при получении данных менеджера.');
+                            return;
                         }
+
+                        // Send manager's contact info to user with "Write Manager" button
+                        const managerUsername = manager.username ? `@${manager.username}` : 'Не указан';
+                        const writeManagerUrl = manager.username ? `tg://resolve?domain=${manager.username}` : `tg://user?id=${manager.telegram_id}`;
+
+                        bot.sendMessage(chatId,
+                            `✅ **Контакты обменены!**\n\n` +
+                            `👤 **Менеджер:** ${manager.full_name}\n` +
+                            `💬 **Telegram:** ${managerUsername}\n` +
+                            `🏢 **Компания:** Partnerkin.com\n\n` +
+                            `💼 Ваш контакт передан менеджеру.\n` +
+                            `🤝 Нажмите кнопку ниже для общения!`,
+                            {
+                                parse_mode: 'Markdown',
+                                reply_markup: {
+                                    inline_keyboard: [[
+                                        { text: '💬 Написать менеджеру', url: writeManagerUrl }
+                                    ]]
+                                }
+                            }
+                        );
+
+                        // Send new contact info to manager
+                        bot.sendMessage(currentState.managerTelegramId,
+                            `🤝 **Новый контакт с конференции!**\n\n` +
+                            `👤 **Имя:** ${contactName}\n` +
+                            `📞 **Телефон:** ${contactPhone}\n` +
+                            `💬 **Telegram:** ${msg.from.username ? '@' + msg.from.username : 'Не указан'}\n` +
+                            `🆔 **ID:** ${telegramId}\n\n` +
+                            `💼 Контакт сохранён в разделе "Контакты с конфы"`,
+                            { parse_mode: 'Markdown' }
+                        );
                     });
 
                     // Clear state
