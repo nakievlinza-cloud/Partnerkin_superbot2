@@ -1097,7 +1097,10 @@ bot.on('message', (msg) => {
         }
 
         // Handle contact sharing for QR code exchange
+        console.log(`[CONTACT DEBUG] msg.contact: ${!!msg.contact}, currentState: ${JSON.stringify(currentState)}`);
         if (msg.contact && currentState && currentState.type === 'contact_exchange' && currentState.step === 'awaiting_contact_share') {
+            console.log(`[CONTACT DEBUG] Processing contact from user ${telegramId}`);
+            console.log(`[CONTACT DEBUG] Contact details:`, msg.contact);
             const contact = msg.contact;
             const contactName = `${contact.first_name || ''} ${contact.last_name || ''}`.trim();
             const contactPhone = contact.phone_number || '';
@@ -1538,6 +1541,26 @@ function showEventDetails(chatId, telegramId, event) {
             return;
         } else if (text === '🔙 Назад в работу') {
             showWorkMenu(chatId, telegramId);
+            return;
+        } else if (text === '📲 Отправить мой контакт') {
+            // Handle the text button press for contact sharing
+            if (currentState && currentState.type === 'contact_exchange' && currentState.step === 'awaiting_contact_share') {
+                bot.sendMessage(chatId,
+                    `📲 **Поделитесь контактом**\n\n` +
+                    `Нажмите кнопку ниже, чтобы отправить ваш контакт ${currentState.managerFullName}.\n\n` +
+                    `⚠️ Убедитесь, что разрешили боту доступ к контактам.`,
+                    {
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            keyboard: [[{ text: '📲 Отправить мой контакт', request_contact: true }]],
+                            resize_keyboard: true,
+                            one_time_keyboard: true
+                        }
+                    }
+                );
+            } else {
+                bot.sendMessage(chatId, '❌ Ошибка! Попробуйте отсканировать QR-код заново.');
+            }
             return;
         } else if (text === '🎮 Развлечения') {
             showFunMenu(chatId);
