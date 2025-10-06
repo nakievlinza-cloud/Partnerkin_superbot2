@@ -969,25 +969,75 @@ bot.onText(/\/start(?: (.+))?/, (msg, match) => {
                         return;
                     }
 
-                    // Set state for the new contact (scanner)
-                    global.userScreenshots[telegramId] = {
-                        type: 'contact_exchange',
-                        step: 'awaiting_contact_share',
-                        managerId: manager.id,
-                        managerTelegramId: manager.telegram_id,
-                        managerFullName: manager.full_name
-                    };
+                    // Get scanner's info
+                    db.get("SELECT full_name, username FROM users WHERE telegram_id = ?", [telegramId], (err, scanner) => {
+                        const scannerName = scanner ? scanner.full_name : msg.from.first_name || 'Пользователь';
+                        const scannerUsername = scanner ? scanner.username : msg.from.username;
 
-                    const message = `Здравствуйте! Вы хотите связаться с **${manager.full_name}** из "Partnerkin.com".\n\n` +
-                                    `Нажмите кнопку ниже, чтобы поделиться вашими контактными данными и начать общение.`;
+                        // Create contacts table if it doesn't exist
+                        db.run(`CREATE TABLE IF NOT EXISTS conference_contacts (
+                            id INTEGER PRIMARY KEY,
+                            manager_id INTEGER,
+                            contact_telegram_id INTEGER,
+                            contact_name TEXT,
+                            contact_phone TEXT,
+                            contact_username TEXT,
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY(manager_id) REFERENCES users(id),
+                            UNIQUE(manager_id, contact_telegram_id)
+                        )`, (err) => {
+                            if (err) console.error('Error creating conference_contacts table:', err);
+                        });
 
-                    const keyboard = {
-                        keyboard: [[{ text: '📲 Отправить мой контакт', request_contact: true }]],
-                        resize_keyboard: true,
-                        one_time_keyboard: true
-                    };
+                        // Save scanner to manager's contacts
+                        db.run(`INSERT OR REPLACE INTO conference_contacts
+                                (manager_id, contact_telegram_id, contact_name, contact_phone, contact_username)
+                                VALUES (?, ?, ?, ?, ?)`,
+                            [manager.id, telegramId, scannerName, null, scannerUsername],
+                            (err) => {
+                                if (err) console.error('Error saving scanner contact:', err);
+                            }
+                        );
 
-                    bot.sendMessage(chatId, message, { parse_mode: 'Markdown', reply_markup: keyboard });
+                        // Send manager's contact to scanner with "Write Manager" button
+                        const managerUsername = manager.username ? `@${manager.username}` : 'Не указан';
+                        const writeManagerUrl = manager.username ? `tg://resolve?domain=${manager.username}` : `tg://user?id=${manager.telegram_id}`;
+
+                        bot.sendMessage(chatId,
+                            `🤝 **Контакт менеджера**\n\n` +
+                            `👤 **Имя:** ${manager.full_name}\n` +
+                            `💬 **Telegram:** ${managerUsername}\n` +
+                            `🏢 **Компания:** Partnerkin.com\n\n` +
+                            `✅ Ваш контакт передан менеджеру.\n` +
+                            `💬 Нажмите кнопку для связи!`,
+                            {
+                                parse_mode: 'Markdown',
+                                reply_markup: {
+                                    inline_keyboard: [[
+                                        { text: '💬 Написать менеджеру', url: writeManagerUrl }
+                                    ]]
+                                }
+                            }
+                        );
+
+                        // Send scanner info to manager with quick add to contacts option
+                        bot.sendMessage(manager.telegram_id,
+                            `🤝 **Новый контакт с конференции!**\n\n` +
+                            `👤 **Имя:** ${scannerName}\n` +
+                            `💬 **Telegram:** ${scannerUsername ? '@' + scannerUsername : 'Не указан'}\n` +
+                            `🆔 **ID:** ${telegramId}\n\n` +
+                            `💼 Контакт сохранён в разделе "Контакты с конфы"`,
+                            {
+                                parse_mode: 'Markdown',
+                                reply_markup: {
+                                    inline_keyboard: [[
+                                        { text: '📝 Добавить в контакты', callback_data: `add_to_contacts_${telegramId}` },
+                                        { text: '💬 Написать', url: scannerUsername ? `tg://resolve?domain=${scannerUsername}` : `tg://user?id=${telegramId}` }
+                                    ]]
+                                }
+                            }
+                        );
+                    });
                 });
             } else if (user && user.is_registered === 1) {
                 showMainMenu(chatId, user);
@@ -2565,8 +2615,72 @@ function handleTextInput(chatId, telegramId, text, username) {
             return;
         }
 
+        // Handle quick contact add flow
+        if (currentState && currentState.type === 'quick_contact_add') {
+            switch (currentState.step) {
+                case 'enter_company': {
+                    currentState.companyName = text.trim();
+                    currentState.step = 'enter_position';
+                    bot.sendMessage(chatId,
+                        `🏢 **Компания:** ${currentState.companyName}\n\n` +
+                        `💼 **Шаг 2:** Введите должность контакта:`,
+                        { parse_mode: 'Markdown' }
+                    );
+                    break;
+                }
+                case 'enter_position': {
+                    currentState.position = text.trim();
+                    currentState.step = 'enter_notes';
+                    bot.sendMessage(chatId,
+                        `🏢 **Компания:** ${currentState.companyName}\n` +
+                        `💼 **Должность:** ${currentState.position}\n\n` +
+                        `📝 **Шаг 3:** Добавьте краткий комментарий (необязательно, напишите "пропустить" чтобы пропустить):`,
+                        { parse_mode: 'Markdown' }
+                    );
+                    break;
+                }
+                case 'enter_notes': {
+                    const notes = text.trim() === 'пропустить' ? '' : text.trim();
 
-        
+                    // Save to company_contacts table
+                    db.get("SELECT id FROM users WHERE telegram_id = ?", [telegramId], (err, user) => {
+                        if (err || !user) {
+                            bot.sendMessage(chatId, '❌ Ошибка идентификации пользователя.');
+                            delete global.userScreenshots[telegramId];
+                            return;
+                        }
+
+                        db.run(`INSERT INTO company_contacts
+                            (company_name, contact_name, position, phone, telegram, notes, added_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                            [currentState.companyName, currentState.contactName, currentState.position,
+                             currentState.contact.contact_phone || '', currentState.contact.contact_username || '',
+                             notes, user.id],
+                            function(err) {
+                                if (err) {
+                                    console.error('Error saving company contact:', err);
+                                    bot.sendMessage(chatId, '❌ Ошибка при сохранении контакта.');
+                                } else {
+                                    bot.sendMessage(chatId,
+                                        `✅ **Контакт успешно добавлен в базу компании!**\n\n` +
+                                        `👤 **Имя:** ${currentState.contactName}\n` +
+                                        `🏢 **Компания:** ${currentState.companyName}\n` +
+                                        `💼 **Должность:** ${currentState.position}\n` +
+                                        `📝 **Комментарий:** ${notes || 'Не указан'}\n\n` +
+                                        `🎯 Контакт доступен в разделе "Контакты компании".`,
+                                        { parse_mode: 'Markdown' }
+                                    );
+                                }
+                                delete global.userScreenshots[telegramId];
+                            });
+                    });
+                    break;
+                }
+            }
+            return;
+        }
+
+
     } catch (error) {
         console.error('❌ Handle text input error:', error);
     }
@@ -5330,6 +5444,10 @@ bot.on('callback_query', (callbackQuery) => {
             bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
         } else if (data === 'insufficient_funds') {
             bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно П-коинов для покупки!', show_alert: true });
+        } else if (data.startsWith('add_to_contacts_')) {
+            const contactTelegramId = data.split('_')[3];
+            startQuickContactAdd(chatId, telegramId, contactTelegramId);
+            bot.answerCallbackQuery(callbackQuery.id).catch(console.error);
         } else if (data.startsWith('approve_pcoin_request_')) {
             const requestId = data.split('_')[3];
             db.get("SELECT * FROM pcoin_requests WHERE id = ?", [requestId], (err, request) => {
@@ -8851,5 +8969,45 @@ function showMyContacts(chatId, telegramId) {
                     bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
                 }
             });
+    });
+}
+
+// ========================================
+// QUICK CONTACT ADD SYSTEM
+// ========================================
+
+function startQuickContactAdd(chatId, managerTelegramId, contactTelegramId) {
+    // Get contact info from conference_contacts
+    db.get(`SELECT cc.contact_name, cc.contact_username, u.full_name
+            FROM conference_contacts cc
+            LEFT JOIN users u ON cc.contact_telegram_id = u.telegram_id
+            WHERE cc.contact_telegram_id = ? AND cc.manager_id = (
+                SELECT id FROM users WHERE telegram_id = ?
+            )`, [contactTelegramId, managerTelegramId], (err, contact) => {
+
+        if (err || !contact) {
+            bot.sendMessage(chatId, '❌ Контакт не найден.');
+            return;
+        }
+
+        const contactName = contact.contact_name || contact.full_name || 'Неизвестный';
+
+        // Set state for quick contact addition
+        global.userScreenshots[managerTelegramId] = {
+            type: 'quick_contact_add',
+            step: 'enter_company',
+            contactId: contactTelegramId,
+            contactName: contactName,
+            contactUsername: contact.contact_username,
+            data: {}
+        };
+
+        bot.sendMessage(chatId,
+            `📝 **Быстрое добавление контакта**\n\n` +
+            `👤 **Контакт:** ${contactName}\n` +
+            `💬 **Telegram:** ${contact.contact_username ? '@' + contact.contact_username : 'Не указан'}\n\n` +
+            `🏢 **Шаг 1:** Введите название компании контакта:`,
+            { parse_mode: 'Markdown' }
+        );
     });
 }
