@@ -555,26 +555,6 @@ db.serialize(() => {
     )`);
 
     console.log('🚀 База данных готова к работе!');
-
-    // TEMPORARY: Clear database for testing
-    console.log('🗑️ Очистка базы данных для тестирования...');
-    db.run("DELETE FROM users", (err) => {
-        if (err) console.error('Error clearing users:', err);
-        else console.log('✅ Таблица users очищена');
-    });
-    db.run("DELETE FROM tasks", (err) => {
-        if (err) console.error('Error clearing tasks:', err);
-        else console.log('✅ Таблица tasks очищена');
-    });
-    db.run("DELETE FROM conference_contacts", (err) => {
-        if (err) console.error('Error clearing conference_contacts:', err);
-        else console.log('✅ Таблица conference_contacts очищена');
-    });
-    db.run("DELETE FROM company_contacts", (err) => {
-        if (err) console.error('Error clearing company_contacts:', err);
-        else console.log('✅ Таблица company_contacts очищена');
-    });
-    console.log('🎯 База данных полностью очищена для тестирования!');
 });
 
 // ========== КЛАВИАТУРЫ ==========
